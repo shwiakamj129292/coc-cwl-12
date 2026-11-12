@@ -1,13 +1,17 @@
 {
   "name": "coc-cwl-signup",
   "version": "2.0.0",
-  "description": "部落冲突联赛报名系统（Cloudflare Pages + D1）",
+  "description": "部落冲突联赛报名系统（Cloudflare Workers + D1）",
   "private": true,
   "main": "server.js",
   "scripts": {
-    "build": "mkdir -p dist && cp index.html dist/index.html",
+    "build": "node -e \"const fs=require('node:fs');fs.mkdirSync('dist',{recursive:true});fs.copyFileSync('index.html','dist/index.html')\"",
+    "preview": "npm run build && wrangler dev",
     "start": "node server.js",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.160.1"
   },
   "engines": {
     "node": ">=22.5"
