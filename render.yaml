@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: coc-cwl-signup
+    runtime: node
+    plan: starter
+    region: singapore
+    healthCheckPath: /api/state
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    disk:
+      name: coc-cwl-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DB_FILE
+        value: /data/app.db
+      - key: NODE_VERSION
+        value: 24.1.0
+      - key: ADMIN_PASSWORD
+        sync: false
