@@ -213,3 +213,63 @@ test("Pages API seeds data, enforces ownership and capacity, and archives reset"
   response = await runApi(onRequest, env, "/api/unknown");
   assert.equal(response.status, 404);
 });
+
+test("one-time admin setup stores a hash, consumes its code, and enables login", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1() };
+  const setupCode = "a".repeat(64);
+  const password = "safe-test-password-2026";
+  await env.DB.prepare("INSERT INTO settings(key, value) VALUES('admin_setup_token', ?)")
+    .bind(setupCode).run();
+
+  let response = await runApi(onRequest, env, "/api/admin/setup/status");
+  assert.deepEqual(await readJson(response), { available: true });
+
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.20" },
+    body: JSON.stringify({ token: "b".repeat(64), password })
+  });
+  assert.equal(response.status, 403);
+
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.20" },
+    body: JSON.stringify({ token: setupCode, password })
+  });
+  assert.equal(response.status, 200);
+  const setupResult = await readJson(response);
+  assert.ok(setupResult.adminToken);
+
+  const passwordRow = await env.DB.prepare(
+    "SELECT value FROM settings WHERE key = 'adminPasswordHash'"
+  ).first();
+  assert.match(passwordRow.value, /^210000\$/);
+  assert.equal(passwordRow.value.includes(password), false);
+  assert.equal(await env.DB.prepare(
+    "SELECT value FROM settings WHERE key = 'admin_setup_token'"
+  ).first(), null);
+  response = await runApi(onRequest, env, "/api/admin/setup/status");
+  assert.deepEqual(await readJson(response), { available: false });
+
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.20" },
+    body: JSON.stringify({ password: "wrong-password" })
+  });
+  assert.equal(response.status, 401);
+
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.20" },
+    body: JSON.stringify({ password })
+  });
+  assert.equal(response.status, 200);
+
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.20" },
+    body: JSON.stringify({ token: setupCode, password: "another-safe-password-2026" })
+  });
+  assert.equal(response.status, 409);
+});

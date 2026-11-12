@@ -1,5 +1,6 @@
 const ADMIN_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+const PASSWORD_HASH_ITERATIONS = 210000;
 const MAX_BODY = 64 * 1024;
 const ALLOWED_TH = new Set(["", "19本", "18本", "17本", "16本", "15本及以下"]);
 const VALID_COLORS = new Set([
@@ -124,6 +125,109 @@ function passwordMatches(candidate, configured) {
   return difference === 0;
 }
 
+function bytesToHex(bytes) {
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToBytes(value) {
+  if (!/^(?:[0-9a-f]{2})+$/i.test(value)) return null;
+  return Uint8Array.from(value.match(/.{2}/g), byte => parseInt(byte, 16));
+}
+
+async function hashAdminPassword(password, saltHex, iterations = PASSWORD_HASH_ITERATIONS) {
+  const salt = saltHex ? hexToBytes(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+  if (!salt) throw new Error("invalid password salt");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations },
+    key,
+    256
+  );
+  return `${iterations}$${bytesToHex(salt)}$${bytesToHex(new Uint8Array(bits))}`;
+}
+
+async function verifyAdminPassword(password, encoded) {
+  const [iterationText, saltHex, expectedHex, extra] = String(encoded || "").split("$");
+  const iterations = Number(iterationText);
+  const expected = hexToBytes(expectedHex || "");
+  if (extra !== undefined || !Number.isInteger(iterations) ||
+      iterations < 100000 || iterations > 1000000 || !expected) {
+    return false;
+  }
+  const actualHex = (await hashAdminPassword(password, saltHex, iterations)).split("$")[2];
+  return passwordMatches(actualHex, expectedHex);
+}
+
+async function recordLoginAttempt(db, request, now) {
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  await stmt(db, "DELETE FROM login_attempts WHERE window_start <= ?")
+    .bind(now - LOGIN_WINDOW_MS).run();
+  const attempt = await first(
+    db,
+    `INSERT INTO login_attempts(ip, window_start, count) VALUES(?, ?, 1)
+     ON CONFLICT(ip) DO UPDATE SET
+       window_start = CASE WHEN login_attempts.window_start <= ? THEN excluded.window_start ELSE login_attempts.window_start END,
+       count = CASE WHEN login_attempts.window_start <= ? THEN 1 ELSE login_attempts.count + 1 END
+     RETURNING count`,
+    ip, now, now - LOGIN_WINDOW_MS, now - LOGIN_WINDOW_MS
+  );
+  return attempt?.count || 1;
+}
+
+async function adminPasswordConfigured(db, env) {
+  if (typeof env.ADMIN_PASSWORD === "string" && env.ADMIN_PASSWORD) return true;
+  return !!(await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'"));
+}
+
+async function setupAdminPassword(request, env) {
+  const db = env.DB;
+  if (await recordLoginAttempt(db, request, Date.now()) > 8) {
+    return json({ error: "尝试次数过多，请稍后再试" }, 429);
+  }
+  if (await adminPasswordConfigured(db, env)) {
+    return json({ error: "管理员密码已初始化" }, 409);
+  }
+
+  const body = await readJson(request);
+  const token = String(body.token || "");
+  const password = String(body.password || "");
+  if (!/^[0-9a-f]{64}$/i.test(token)) {
+    return json({ error: "一次性授权码无效" }, 403);
+  }
+  if (password.length < 12 || password.length > 128) {
+    return json({ error: "密码需为 12 至 128 个字符" }, 400);
+  }
+  const setupToken = await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
+  if (!setupToken || !passwordMatches(token, setupToken.value)) {
+    return json({ error: "一次性授权码无效或已使用" }, 403);
+  }
+
+  const encoded = await hashAdminPassword(password);
+  const inserted = await first(
+    db,
+    `INSERT INTO settings(key, value)
+     SELECT 'adminPasswordHash', ?
+     WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'admin_setup_token' AND value = ?)
+       AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'adminPasswordHash')
+     RETURNING key`,
+    encoded, token
+  );
+  if (!inserted) return json({ error: "一次性授权码无效或已使用" }, 403);
+  await stmt(db, "DELETE FROM settings WHERE key = 'admin_setup_token' AND value = ?")
+    .bind(token).run();
+  const sessionToken = randomHex(24);
+  const expiresAt = Date.now() + ADMIN_SESSION_MS;
+  await stmt(db, "INSERT INTO sessions(token, created_at, expires_at) VALUES(?, ?, ?)")
+    .bind(sessionToken, Date.now(), expiresAt).run();
+  return json({ ok: true, adminToken: sessionToken, expiresAt });
+}
+
 function logStatement(db, type, clan, details, operator, token, time = Date.now()) {
   return stmt(
     db,
@@ -201,25 +305,21 @@ function decodePathPart(value) {
 async function login(request, env) {
   const db = env.DB;
   const now = Date.now();
-  const ip = request.headers.get("cf-connecting-ip") || "unknown";
-  await stmt(db, "DELETE FROM login_attempts WHERE window_start <= ?")
-    .bind(now - LOGIN_WINDOW_MS).run();
-  const attempt = await first(
-    db,
-    `INSERT INTO login_attempts(ip, window_start, count) VALUES(?, ?, 1)
-     ON CONFLICT(ip) DO UPDATE SET
-       window_start = CASE WHEN login_attempts.window_start <= ? THEN excluded.window_start ELSE login_attempts.window_start END,
-       count = CASE WHEN login_attempts.window_start <= ? THEN 1 ELSE login_attempts.count + 1 END
-     RETURNING count`,
-    ip, now, now - LOGIN_WINDOW_MS, now - LOGIN_WINDOW_MS
-  );
-  if (attempt.count > 8) return json({ error: "尝试次数过多，请稍后再试" }, 429);
+  if (await recordLoginAttempt(db, request, now) > 8) {
+    return json({ error: "尝试次数过多，请稍后再试" }, 429);
+  }
 
   const body = await readJson(request);
-  if (typeof env.ADMIN_PASSWORD !== "string" || !env.ADMIN_PASSWORD) {
+  const storedHash = await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'");
+  if (!storedHash && (typeof env.ADMIN_PASSWORD !== "string" || !env.ADMIN_PASSWORD)) {
     return json({ error: "管理员密码未配置" }, 503);
   }
-  if (!passwordMatches(String(body.password || ""), env.ADMIN_PASSWORD)) {
+  const candidate = String(body.password || "");
+  if (candidate.length > 128) return json({ error: "密码错误" }, 401);
+  const valid = storedHash
+    ? await verifyAdminPassword(candidate, storedHash.value)
+    : passwordMatches(candidate, env.ADMIN_PASSWORD);
+  if (!valid) {
     return json({ error: "密码错误" }, 401);
   }
   const token = randomHex(24);
@@ -238,6 +338,17 @@ async function handle(request, env) {
   if (path === "/api/device") {
     if (method !== "POST") return json({ error: "method" }, 405);
     return json({ deviceToken: `#U-${randomHex(8).toUpperCase()}` });
+  }
+
+  if (path === "/api/admin/setup/status") {
+    if (method !== "GET") return json({ error: "method" }, 405);
+    const token = await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
+    return json({ available: !!token && !(await adminPasswordConfigured(db, env)) });
+  }
+
+  if (path === "/api/admin/setup") {
+    if (method !== "POST") return json({ error: "method" }, 405);
+    return setupAdminPassword(request, env);
   }
 
   if (path === "/api/admin/login") {
