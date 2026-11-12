@@ -304,6 +304,24 @@
                 <button type="button" onclick="closeManagerLoginModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
                 <button type="button" id="manager-login-btn" onclick="verifyManagerLogin()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">登录</button>
             </div>
+            <button type="button" id="admin-setup-link" onclick="openAdminSetupModal()" class="hidden w-full text-xs text-amber-400 hover:text-amber-300 pt-1">首次设置管理员密码</button>
+        </div>
+    </div>
+
+    <div id="admin-setup-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-key"></i> 初始化管理员密码</h3>
+                <button type="button" onclick="closeAdminSetupModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">一次性授权码仅使用一次。密码需为 12 至 128 个字符。</p>
+            <input type="text" id="admin-setup-token" autocomplete="off" spellcheck="false" placeholder="粘贴一次性授权码" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            <input type="password" id="admin-setup-password" autocomplete="new-password" placeholder="设置管理员密码（至少 12 位）" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            <input type="password" id="admin-setup-confirm" autocomplete="new-password" placeholder="再次输入密码" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            <div class="flex space-x-3 pt-2">
+                <button type="button" onclick="closeAdminSetupModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
+                <button type="button" id="admin-setup-submit" onclick="submitAdminSetup()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">设置密码</button>
+            </div>
         </div>
     </div>
 
@@ -602,10 +620,65 @@
 
         function openManagerLoginModal() {
             document.getElementById('manager-pwd-input').value = '';
+            const setupLink = document.getElementById('admin-setup-link');
+            setupLink.classList.add('hidden');
             document.getElementById('manager-login-modal').classList.remove('hidden');
+            api('/api/admin/setup/status').then(data => {
+                if (!document.getElementById('manager-login-modal').classList.contains('hidden')) {
+                    setupLink.classList.toggle('hidden', !data.available);
+                }
+            }).catch(() => {});
             setTimeout(() => document.getElementById('manager-pwd-input').focus(), 100);
         }
         function closeManagerLoginModal() { document.getElementById('manager-login-modal').classList.add('hidden'); }
+        function openAdminSetupModal() {
+            closeManagerLoginModal();
+            document.getElementById('admin-setup-token').value = '';
+            document.getElementById('admin-setup-password').value = '';
+            document.getElementById('admin-setup-confirm').value = '';
+            document.getElementById('admin-setup-modal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('admin-setup-token').focus(), 100);
+        }
+        function closeAdminSetupModal() {
+            document.getElementById('admin-setup-modal').classList.add('hidden');
+        }
+        async function submitAdminSetup() {
+            const token = document.getElementById('admin-setup-token').value.trim();
+            const password = document.getElementById('admin-setup-password').value;
+            const confirm = document.getElementById('admin-setup-confirm').value;
+            const button = document.getElementById('admin-setup-submit');
+            if (password.length < 12 || password.length > 128) {
+                alert('密码需为 12 至 128 个字符。');
+                return;
+            }
+            if (password !== confirm) {
+                alert('两次输入的密码不一致。');
+                return;
+            }
+            if (button) { button.disabled = true; button.textContent = '正在设置...'; }
+            try {
+                const data = await api('/api/admin/setup', {
+                    method: 'POST',
+                    body: { token, password }
+                });
+                adminToken = data.adminToken;
+                isManager = true;
+                try { localStorage.setItem(ADMIN_TOKEN_KEY, adminToken); } catch(e) {}
+                document.getElementById('admin-setup-token').value = '';
+                document.getElementById('admin-setup-password').value = '';
+                document.getElementById('admin-setup-confirm').value = '';
+                closeAdminSetupModal();
+                renderSystemMeta();
+                renderManagerPanel();
+                renderClans();
+                await fetchState(true);
+                alert('管理员密码已初始化，一次性授权码已作废。');
+            } catch (e) {
+                alert(e.message || '初始化失败，请检查授权码后重试。');
+            } finally {
+                if (button) { button.disabled = false; button.textContent = '设置密码'; }
+            }
+        }
         async function verifyManagerLogin() {
             const pwd = document.getElementById('manager-pwd-input').value;
             const btn = document.getElementById('manager-login-btn');
