@@ -622,7 +622,9 @@
                 await fetchState(true);
                 alert('验证成功，已进入管理员模式！你现在可以查看所有人绑定的多号与全部修改记录。');
             } catch (e) {
-                alert(e.status === 429 ? '尝试次数过多，请稍后再试' : '密码错误！');
+                alert(e.status === 429
+                    ? '尝试次数过多，请稍后再试'
+                    : (e.message || '管理员登录失败，请稍后重试。'));
             } finally {
                 if (btn) { btn.disabled = false; btn.textContent = '登录'; }
             }
