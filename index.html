@@ -1449,11 +1449,34 @@
 
         function openExportModal() {
             const lines = [`🛡️ 【${systemMeta.mainTitle}实时简报】`];
+
+            // 按段位归类分组：优先按段位库顺序，其余归类追加在后
+            const groupMap = {};
+            const ensureGroup = (key) => {
+                if (!groupMap[key]) groupMap[key] = { key, label: key, clans: [] };
+                return groupMap[key];
+            };
+            rankOptions.forEach(o => ensureGroup(o.value).label = o.label);
             clans.forEach(c => {
-                const listStr = c.players.length > 0 ? c.players.map(p => p.text).join('、') : '暂无';
-                const subsStr = (c.subs && c.subs.length > 0) ? `\n  替补(${c.subs.length}人): ${c.subs.map(s => s.text).join('、')}` : '';
-                lines.push(`\n▸ ${c.name} [${c.rank}] (正选 ${c.players.length}/${c.capacity}人)\n  标签: ${c.tag} | 正选: ${listStr}${subsStr}`);
+                const key = c.category || '未分组';
+                ensureGroup(key).clans.push(c);
             });
+            const orderedKeys = rankOptions.map(o => o.value)
+                .filter(k => groupMap[k] && groupMap[k].clans.length);
+            Object.keys(groupMap).forEach(k => {
+                if (!rankOptions.some(o => o.value === k) && groupMap[k].clans.length) orderedKeys.push(k);
+            });
+
+            orderedKeys.forEach(k => {
+                const g = groupMap[k];
+                lines.push(`\n━━━ ${g.label} 段位（${g.clans.length}个部落）━━━`);
+                g.clans.forEach(c => {
+                    const listStr = c.players.length > 0 ? c.players.map(p => p.text).join('、') : '暂无';
+                    const subsStr = (c.subs && c.subs.length > 0) ? `\n  替补(${c.subs.length}人): ${c.subs.map(s => s.text).join('、')}` : '';
+                    lines.push(`\n▸ ${c.name} [${c.rank}] (正选 ${c.players.length}/${c.capacity}人)\n  标签: ${c.tag} | 正选: ${listStr}${subsStr}`);
+                });
+            });
+
             const cleanUrl = window.location.href.split('#')[0];
             lines.push(`\n👉 点击直接打开实时报名（自动绑定认证符号，防篡改）：${cleanUrl}`);
             document.getElementById('export-textarea').value = lines.join('');
