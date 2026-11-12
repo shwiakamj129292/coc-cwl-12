@@ -375,38 +375,4 @@
         }
 
         function closeExportModal() {
-            document.getElementById('export-modal').classList.add('hidden');
-        }
-
-        function copyExportText() {
-            const textarea = document.getElementById('export-textarea');
-            textarea.select();
-            try {
-                document.execCommand('copy');
-                alert('简报已复制！可直接粘贴到微信群。');
-            } catch (e) {
-                alert('请手动长按复制文本框内容');
-            }
-        }
-
-        function copyText(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                alert(`已复制部落标签：${text}`);
-            }).catch(() => {
-                alert(`部落标签：${text}`);
-            });
-        }
-
-        // Execute immediately when script loads and also on window load
-        try {
-            renderClans();
-        } catch(err) {
-            console.error(err);
-        }
-
-        window.onload = function() {
-            renderClans();
-        };
-    </script>
-</body>
-</html>
+            document.getElementById('expor
