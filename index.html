@@ -40,11 +40,11 @@
                         <i class="fa-solid fa-filter text-amber-400"></i> 按段位筛选部落：
                     </h2>
                     <div id="filter-buttons" class="flex flex-wrap gap-2 mt-2">
-                        <button onclick="filterClan('all')" class="filter-btn active bg-amber-500 text-slate-900 font-bold px-3 py-1 rounded-full text-xs transition">全部 (7)</button>
-                        <button onclick="filterClan('冠军3')" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">冠军3</button>
-                        <button onclick="filterClan('泰坦3')" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">泰坦3</button>
-                        <button onclick="filterClan('大师')" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">大师段位</button>
-                        <button onclick="filterClan('水晶2')" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">水晶2</button>
+                        <button onclick="filterClan('all', event)" class="filter-btn active bg-amber-500 text-slate-900 font-bold px-3 py-1 rounded-full text-xs transition">全部 (7)</button>
+                        <button onclick="filterClan('冠军3', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">冠军3</button>
+                        <button onclick="filterClan('泰坦3', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">泰坦3</button>
+                        <button onclick="filterClan('大师', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">大师段位</button>
+                        <button onclick="filterClan('水晶2', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">水晶2</button>
                     </div>
                 </div>
                 <div class="w-full md:w-auto text-right">
@@ -127,7 +127,6 @@
     </div>
 
     <script>
-        // Initial Clans Data imported from user Excel file
         const initialClans = [
             {
                 id: "xiyang",
@@ -138,20 +137,7 @@
                 capacity: 15,
                 time: "12月1号（下午4点）",
                 requirement: "至少传奇2段位(至少一个号）；考核：传奇1模式 3进2（传奇1段位无需考核）",
-                players: [
-                    "永恒星河✨洛",
-                    "神话再现✨洛",
-                    "黎明之夏✨洛",
-                    "春暖花开✨洛",
-                    "终为向日✨洛",
-                    "荧光之夜✨洛",
-                    "大千世界✨洛",
-                    "幽冥鬼域✨洛",
-                    "雨后春笋✨洛",
-                    "夜林之溪✨洛",
-                    "闪电龙骑士",
-                    "Allenyip"
-                ]
+                players: ["永恒星河✨洛", "神话再现✨洛", "黎明之夏✨洛", "春暖花开✨洛", "终为向日✨洛", "荧光之夜✨洛", "大千世界✨洛", "幽冥鬼域✨洛", "雨后春笋✨洛", "夜林之溪✨洛", "闪电龙骑士", "Allenyip"]
             },
             {
                 id: "shikong",
@@ -162,13 +148,7 @@
                 capacity: 15,
                 time: "12月1号（下午4点）",
                 requirement: "至少传奇3段位（至少一个号）；考核：传奇3模式 4进3（传奇2及以上无需考核）",
-                players: [
-                    "皇家禁卫军 18本",
-                    "皇家守护者 18本",
-                    "womeiyouwen 18本",
-                    "karina 18本",
-                    "karina 18本"
-                ]
+                players: ["皇家禁卫军 18本", "皇家守护者 18本", "womeiyouwen 18本", "karina 18本", "karina 18本"]
             },
             {
                 id: "piaoxue",
@@ -179,10 +159,7 @@
                 capacity: 15,
                 time: "12月1号（下午4点后）",
                 requirement: "19本、18本（最多5个）有打19本3星实力；上次大师1/冠3/泰坦3有18星以上可直接报名，其他找梦幻巧克力审核",
-                players: [
-                    "凛冬 19本",
-                    "林村 19本"
-                ]
+                players: ["凛冬 19本", "林村 19本"]
             },
             {
                 id: "xuejingling",
@@ -226,18 +203,26 @@
                 capacity: 30,
                 time: "12月1号（下午4点后）",
                 requirement: "1到19本都可参加",
-                players: [
-                    "皇家隐秘者 14本"
-                ]
+                players: ["皇家隐秘者 14本"]
             }
         ];
 
-        // Load from localStorage if available, otherwise use initial data
-        let clans = JSON.parse(localStorage.getItem('coc_dec_cwl_clans_v1')) || JSON.parse(JSON.stringify(initialClans));
+        let clans = initialClans;
+        try {
+            const saved = localStorage.getItem('coc_dec_cwl_clans_v2');
+            if (saved) clans = JSON.parse(saved);
+        } catch (e) {
+            console.log("Storage error:", e);
+        }
+
         let currentFilter = 'all';
 
         function saveClans() {
-            localStorage.setItem('coc_dec_cwl_clans_v1', JSON.stringify(clans));
+            try {
+                localStorage.setItem('coc_dec_cwl_clans_v2', JSON.stringify(clans));
+            } catch (e) {
+                console.log("Storage save error:", e);
+            }
         }
 
         function getRankBadgeStyle(rank) {
@@ -249,6 +234,7 @@
 
         function renderClans() {
             const container = document.getElementById('clans-container');
+            if (!container) return;
             container.innerHTML = '';
 
             let totalSigned = 0;
@@ -312,7 +298,8 @@
                 container.appendChild(card);
             });
 
-            document.getElementById('total-stats').textContent = `总报名：${totalSigned} / ${totalCap} 人`;
+            const statsEl = document.getElementById('total-stats');
+            if (statsEl) statsEl.textContent = `总报名：${totalSigned} / ${totalCap} 人`;
         }
 
         function escapeHtml(text) {
@@ -321,14 +308,16 @@
             return div.innerHTML;
         }
 
-        function filterClan(category) {
+        function filterClan(category, event) {
             currentFilter = category;
             document.querySelectorAll('.filter-btn').forEach(btn => {
                 btn.classList.remove('bg-amber-500', 'text-slate-900', 'font-bold');
                 btn.classList.add('bg-slate-700', 'text-slate-300');
             });
-            event.target.classList.remove('bg-slate-700', 'text-slate-300');
-            event.target.classList.add('bg-amber-500', 'text-slate-900', 'font-bold');
+            if (event && event.currentTarget) {
+                event.currentTarget.classList.remove('bg-slate-700', 'text-slate-300');
+                event.currentTarget.classList.add('bg-amber-500', 'text-slate-900', 'font-bold');
+            }
             renderClans();
         }
 
@@ -373,14 +362,10 @@
             const lines = ["🛡️ 【COC 12月联赛报名实时简报】"];
             clans.forEach(c => {
                 const listStr = c.players.length > 0 ? c.players.join('、') : '暂无';
-                lines.push(`
-▸ ${c.name} [${c.rank}] (${c.players.length}/${c.capacity}人)
-  标签: ${c.tag} | 名单: ${listStr}`);
+                lines.push(`\n▸ ${c.name} [${c.rank}] (${c.players.length}/${c.capacity}人)\n  标签: ${c.tag} | 名单: ${listStr}`);
             });
-            lines.push(`
-👉 点击链接自助报名/修改：${window.location.href}`);
-            document.getElementById('export-textarea').value = lines.join('
-');
+            lines.push(`\n👉 点击链接自助报名/修改：${window.location.href}`);
+            document.getElementById('export-textarea').value = lines.join('\n');
             document.getElementById('export-modal').classList.remove('hidden');
         }
 
@@ -389,21 +374,4 @@
         }
 
         function copyExportText() {
-            const textarea = document.getElementById('export-textarea');
-            textarea.select();
-            navigator.clipboard.writeText(textarea.value).then(() => {
-                alert('简报已复制！可直接粘贴到微信群。');
-            });
-        }
-
-        function copyText(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                alert(`已复制部落标签：${text}`);
-            });
-        }
-
-        // Initial render
-        renderClans();
-    </script>
-</body>
-</html>
+         
