@@ -3,5 +3,6 @@ npm-debug.log*
 *.log
 .DS_Store
 .env
+data/*.db
 data/*.db-wal
 data/*.db-shm
