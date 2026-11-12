@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>部落冲突 联赛统一报名系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen pb-12">
+    <!-- Header -->
+    <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-50 shadow-lg">
+        <div class="max-w-4xl mx-auto px-4 py-3 flex flex-wrap justify-between items-center gap-2">
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-shield-halved text-amber-500 text-2xl"></i>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h1 id="system-main-title" class="font-bold text-lg text-white">COC 12月联赛统一报名</h1>
+                        <button id="edit-title-btn" onclick="openEditTitleModal()" class="hidden text-xs bg-slate-700 hover:bg-slate-600 text-amber-400 px-2 py-0.5 rounded border border-slate-600" title="修改联赛标题">
+                            <i class="fa-solid fa-pen"></i>
+                        </button>
+                    </div>
+                    <p id="system-sub-title" class="text-xs text-slate-400">微信群专属防刷屏多部落同步报名系统</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-2">
+                <button onclick="openExportModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1">
+                    <i class="fa-solid fa-copy"></i>
+                    <span>生成群简报</span>
+                </button>
+                <div id="manager-control-panel" class="flex items-center space-x-2"></div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-4xl mx-auto px-4 py-6 space-y-6">
+        <!-- Sync Status & Filter Bar -->
+        <div class="bg-slate-800/90 border border-slate-700 rounded-xl p-4 shadow space-y-3">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <h2 class="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-filter text-amber-400"></i> 按段位筛选部落：
+                    </h2>
+                    <div id="filter-buttons" class="flex flex-wrap gap-2 mt-2">
+                        <button onclick="filterClan('all', event)" class="filter-btn active bg-amber-500 text-slate-900 font-bold px-3 py-1 rounded-full text-xs transition">全部 (7)</button>
+                        <button onclick="filterClan('冠军3', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">冠军3</button>
+                        <button onclick="filterClan('泰坦3', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">泰坦3</button>
+                        <button onclick="filterClan('大师', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">大师段位</button>
+                        <button onclick="filterClan('水晶2', event)" class="filter-btn bg-slate-700 text-slate-300 hover:bg-slate-600 px-3 py-1 rounded-full text-xs transition">水晶2</button>
+                    </div>
+                </div>
+                <div class="w-full md:w-auto flex flex-col items-end gap-1.5">
+                    <span id="total-stats" class="text-xs bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-700 text-amber-400 font-mono">统计加载中...</span>
+                    <div class="flex items-center gap-2">
+                        <span id="sync-badge" class="text-[11px] text-amber-400 flex items-center gap-1">
+                            <i class="fa-solid fa-spinner fa-spin"></i> 正在连接公共频道...
+                        </span>
+                        <button onclick="manualRefresh()" class="text-[11px] bg-slate-700 hover:bg-slate-600 text-slate-200 px-2 py-0.5 rounded transition" title="立即从云端刷新">
+                            <i class="fa-solid fa-arrows-rotate"></i> 刷新
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Clans List Container -->
+        <div id="clans-container" class="space-y-4"></div>
+
+        <!-- Bottom Share Box -->
+        <div class="bg-gradient-to-r from-amber-900/40 to-slate-800 border border-amber-500/30 rounded-2xl p-6 text-center space-y-4 shadow-xl">
+            <h3 class="text-lg font-bold text-amber-400"><i class="fa-solid fa-bullhorn"></i> 全员免密钥实时互通 & 自主修改</h3>
+            <p class="text-xs text-slate-300 leading-relaxed max-w-xl mx-auto">
+                群友可随时点击自己报名的名字进行修改或取消；管理员可在后台查看完整的修改审计日志及全月数据。
+            </p>
+            <div class="flex justify-center gap-3">
+                <button onclick="openExportModal()" class="bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold px-6 py-2.5 rounded-xl text-sm shadow transition flex items-center gap-2">
+                    <i class="fa-solid fa-square-poll-horizontal"></i> 生成微信群简报文本
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal for Signup -->
+    <div id="signup-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-md rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 id="modal-title" class="font-bold text-base text-amber-400">参与部落报名</h3>
+                <button onclick="closeModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form id="signup-form" onsubmit="handleSignup(event)" class="space-y-4">
+                <input type="hidden" id="modal-clan-index">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">报名位置类型：</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="cursor-pointer">
+                            <input type="radio" name="signup-role" id="role-main" value="main" class="peer sr-only" checked>
+                            <div class="text-center py-2 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 text-xs font-semibold peer-checked:bg-amber-500 peer-checked:text-slate-900 peer-checked:border-amber-500 transition">
+                                <i class="fa-solid fa-swords mr-1"></i> 正选名额
+                            </div>
+                        </label>
+                        <label class="cursor-pointer">
+                            <input type="radio" name="signup-role" id="role-sub" value="sub" class="peer sr-only">
+                            <div class="text-center py-2 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 text-xs font-semibold peer-checked:bg-sky-500 peer-checked:text-slate-900 peer-checked:border-sky-500 transition">
+                                <i class="fa-solid fa-user-clock mr-1"></i> 替补席位
+                            </div>
+                        </label>
+                    </div>
+                    <p id="role-hint" class="text-[11px] text-amber-400/90 mt-1.5 hidden"></p>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">游戏昵称 / 角色名：</label>
+                    <input type="text" id="player-name" required placeholder="例如：永恒星河" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">大本营等级 (可选)：</label>
+                    <select id="player-th" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+                        <option value="">不标注大本</option>
+                        <option value="19本">19本</option>
+                        <option value="18本">18本</option>
+                        <option value="17本">17本</option>
+                        <option value="16本">16本</option>
+                        <option value="15本及以下">15本及以下</option>
+                    </select>
+                </div>
+                <div class="bg-slate-800/60 p-3 rounded-xl border border-slate-700/60 text-xs text-slate-400 space-y-1">
+                    <p id="modal-clan-requirement" class="text-amber-300 font-medium"></p>
+                    <p id="modal-clan-time"></p>
+                </div>
+                <div class="flex space-x-3 pt-2">
+                    <button type="button" onclick="closeModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
+                    <button type="submit" id="submit-signup-btn" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">确认报名</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit My Signup Modal (For users to update or delete their own entry) -->
+    <div id="edit-my-signup-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-md rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-user-pen"></i> 修改或取消我的报名</h3>
+                <button onclick="closeEditMySignupModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-300">你正在对自己的报名信息进行维护：</p>
+            <form onsubmit="handleUpdateMySignup(event)" class="space-y-4">
+                <input type="hidden" id="edit-my-clan-index">
+                <input type="hidden" id="edit-my-old-entry">
+                <input type="hidden" id="edit-my-role">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">修改后的游戏昵称 / 角色名：</label>
+                    <input type="text" id="edit-my-player-name" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">修改后的大本营等级：</label>
+                    <select id="edit-my-player-th" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+                        <option value="">不标注大本</option>
+                        <option value="19本">19本</option>
+                        <option value="18本">18本</option>
+                        <option value="17本">17本</option>
+                        <option value="16本">16本</option>
+                        <option value="15本及以下">15本及以下</option>
+                    </select>
+                </div>
+                <div class="flex flex-col gap-2 pt-2">
+                    <button type="submit" class="w-full bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">保存修改</button>
+                    <button type="button" onclick="handleDeleteMySignup()" class="w-full bg-rose-600/80 hover:bg-rose-500 text-white py-2 rounded-xl text-xs font-medium transition">取消我的报名（退赛）</button>
+                    <button type="button" onclick="closeEditMySignupModal()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-xl text-xs font-medium transition">返回</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit System Title Modal -->
+    <div id="edit-title-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-md rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-pen-to-square"></i> 修改本月联赛标题</h3>
+                <button onclick="closeEditTitleModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form onsubmit="saveSystemTitle(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">主标题：</label>
+                    <input type="text" id="input-main-title" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">副标题：</label>
+                    <input type="text" id="input-sub-title" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+                </div>
+                <div class="flex space-x-3 pt-2">
+                    <button type="button" onclick="closeEditTitleModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
+                    <button type="submit" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">保存并同步</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Clan Info Modal -->
+    <div id="edit-clan-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-lg rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-sliders"></i> 修改部落联赛信息</h3>
+                <button onclick="closeEditClanModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form onsubmit="saveClanInfo(event)" class="space-y-3">
+                <input type="hidden" id="edit-clan-index">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">部落名称：</label>
+                        <input type="text" id="edit-clan-name" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">部落标签：</label>
+                        <input type="text" id="edit-clan-tag" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-amber-500">
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">当前段位：</label>
+                        <input type="text" id="edit-clan-rank" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">筛选归类：</label>
+                        <select id="edit-clan-category" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500">
+                            <option value="冠军3">冠军3</option>
+                            <option value="泰坦3">泰坦3</option>
+                            <option value="大师">大师段位</option>
+                            <option value="水晶2">水晶2</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">正选人数上限：</label>
+                        <select id="edit-clan-capacity" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500">
+                            <option value="15">15人</option>
+                            <option value="30">30人</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">本月开战时间：</label>
+                    <input type="text" id="edit-clan-time" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">报名要求与考核说明：</label>
+                    <textarea id="edit-clan-requirement" rows="3" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500"></textarea>
+                </div>
+                <div class="flex space-x-3 pt-2">
+                    <button type="button" onclick="closeEditClanModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
+                    <button type="submit" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">保存修改并同步</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Manager Login Modal -->
+    <div id="manager-login-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-lock"></i> 管理者登录</h3>
+                <button onclick="closeManagerLoginModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">请输入管理员密码以开启全员管理与审计日志权限：</p>
+            <div>
+                <input type="password" id="manager-pwd-input" placeholder="请输入管理密码" onkeydown="if(event.key==='Enter') verifyManagerLogin()" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            </div>
+            <div class="flex space-x-3 pt-2">
+                <button type="button" onclick="closeManagerLoginModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
+                <button type="button" onclick="verifyManagerLogin()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">登录</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- History Audit Modal -->
+    <div id="history-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[85vh]">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-clock-rotate-left"></i> 云端修改记录与审计日志</h3>
+                <button onclick="closeHistoryModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">以下记录了全群在云端同步的所有动作及操作人：</p>
+            <div id="history-list-container" class="overflow-y-auto space-y-2 pr-1 flex-1"></div>
+            <div class="flex justify-between items-center pt-2 border-t border-slate-800">
+                <button onclick="closeHistoryModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-5 py-2.5 rounded-xl transition font-medium w-full">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div id="export-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-lg rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-copy"></i> 微信群防刷屏简报</h3>
+                <button onclick="closeExportModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">复制下方文字发到微信群，任何人打开网页即可查看与自主报名/修改：</p>
+            <textarea id="export-textarea" readonly rows="11" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-xs text-slate-200 font-mono focus:outline-none"></textarea>
+            <div class="flex space-x-3">
+                <button onclick="copyExportText()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-clipboard"></i> 一键复制简报
+                </button>
+                <button onclick="closeExportModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-5 py-2.5 rounded-xl text-sm font-medium transition">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const NTFY_TOPIC = "coc_cwl_sync_room_XXXX_x89a2_v1";
+        const NTFY_PUBLISH_URL = `https://ntfy.sh/${NTFY_TOPIC}`;
+        const NTFY_POLL_URL = `https://ntfy.sh/${NTFY_TOPIC}/json?poll=1&since=all`;
+        const LOCAL_CACHE_KEY = "coc_cwl_ntfy_cache_v1";
+        
+        // 用于记录我在此浏览器报名的所有昵称标记（以便自己随时修改/取消）
+        let mySignups = JSON.parse(localStorage.getItem('coc_cwl_my_entries_v1') || '[]');
+
+        const defaultMeta = {
+            mainTitle: "COC 12月联赛统一报名",
+            subTitle: "微信群专属防刷屏多部落同步报名系统"
+        };
+
+        const initialClans = [
+            {
+                id: "xiyang",
+                name: "夕阳之秋 (晋级组)",
+                tag: "#2PRCUGGJJ",
+                rank: "泰坦3",
+                category: "泰坦3",
+                capacity: 15,
+                time: "12月1号（下午4点）",
+                requirement: "至少传奇2段位(至少一个号）；考核：传奇1模式 3进2（传奇1段位无需考核）",
+                players: ["永恒星河✨洛", "神话再现✨洛", "黎明之夏✨洛", "春暖花开✨洛", "终为向日✨洛", "荧光之夜✨洛", "大千世界✨洛", "幽冥鬼域✨洛", "雨后春笋✨洛", "夜林之溪✨洛", "闪电龙骑士", "Allenyip"],
+                subs: []
+            },
+            {
+                id: "shikong",
+                name: "时空之旅 (晋级组)",
+                tag: "#2J002JY80",
+                rank: "冠军3",
+                category: "冠军3",
+                capacity: 15,
+                time: "12月1号（下午4点）",
+                requirement: "至少传奇3段位（至少一个号）；考核：传奇3模式 4进3（传奇2及以上无需考核）",
+                players: ["皇家禁卫军 18本", "皇家守护者 18本", "womeiyouwen 18本", "karina 18本"],
+                subs: []
+            },
+            {
+                id: "piaoxue",
+                name: "飘雪城",
+                tag: "#2CRVVYQPJ",
+                rank: "冠军3",
+                category: "冠军3",
+                capacity: 15,
+                time: "12月1号（下午4点后）",
+                requirement: "19本、18本（最多5个）有打19本3星实力；上次大师1/冠3/泰坦3有18星以上可直接报名，其他找梦幻巧克力审核",
+                players: ["凛冬 19本", "林村 19本"],
+                subs: []
+            },
+            {
+                id: "xuejingling",
+                name: "雪精灵",
+                tag: "#2GPUCRVR2",
+                rank: "大师2",
+                category: "大师",
+                capacity: 30,
+                time: "12月1号（下午4点后）",
+                requirement: "19本、18本、17本（最多5个）；7次次数必须用完，不可漏刀",
+                players: [],
+                subs: []
+            },
+            {
+                id: "huoyan",
+                name: "火焰部落！",
+                tag: "#Y8UR2GYP",
+                rank: "大师3",
+                category: "大师",
+                capacity: 30,
+                time: "12月1号（下午4点后）",
+                requirement: "19本、18本、17本；7次次数必须用完，不可漏刀",
+                players: [],
+                subs: []
+            },
+            {
+                id: "siyue",
+                name: "四月是你的谎言 (保级组)",
+                tag: "#2JLLVYUVJ",
+                rank: "水晶2",
+                category: "水晶2",
+                capacity: 30,
+                time: "12月1号（下午4点）",
+                requirement: "无大本营等级限制，积极进攻就行",
+                players: [],
+                subs: []
+            },
+            {
+                id: "bingjingling",
+                name: "冰精灵",
+                tag: "#2QJPQ88LJ",
+                rank: "水晶2",
+                category: "水晶2",
+                capacity: 30,
+                time: "12月1号（下午4点后）",
+                requirement: "1到19本都可参加",
+                players: ["皇家隐秘者 14本"],
+                subs: []
+            }
+        ];
+
+        let systemMeta = JSON.parse(JSON.stringify(defaultMeta));
+        let clans = JSON.parse(JSON.stringify(initialClans));
+        let changeLogs = [];
+        let isManager = localStorage.getItem('coc_cwl_is_manager_XXXX') === 'true';
+        let currentFilter = 'all';
+        let isSyncing = false;
+
+        function updateSyncBadge(status, text) {
+            const badge = document.getElementById('sync-badge');
+            if (!badge) return;
+            if (status === 'ok') {
+                badge.className = "text-[11px] text-emerald-400 flex items-center gap-1";
+                badge.innerHTML = `<i class="fa-solid fa-cloud-check"></i> ${text || '云端实时同步中'}`;
+            } else if (status === 'loading') {
+                badge.className = "text-[11px] text-amber-400 flex items-center gap-1";
+                badge.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${text || '正在同步数据...'}`;
+            } else {
+                badge.className = "text-[11px] text-rose-400 flex items-center gap-1";
+                badge.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> ${text || '网络异常，重试中'}`;
+            }
+        }
+
+        // 事件溯源引擎：根据云端历史操作重放恢复最新状态
+        function applyEventToState(evt, evtTime) {
+            if (!evt || !evt.op) return;
+            const timeStr = evtTime ? new Date(evtTime * 1000).toLocaleString('zh-CN', { hour12: false }) : new Date().toLocaleString('zh-CN', { hour12: false });
+            const operatorName = evt.operator || '群友/访客';
+
+            if (evt.op === 'SIGNUP') {
+                const clan = clans[evt.clanIndex];
+                if (!clan) return;
+                if (evt.role === 'main') {
+                    if (clan.players.length < clan.capacity) {
+                        clan.players.push(evt.entry);
+                        changeLogs.unshift({ time: timeStr, type: 'ADD', clan: clan.name, details: `新增【正选】：${evt.entry}`, operator: operatorName });
+                    }
+                } else {
+                    if (!clan.subs) clan.subs = [];
+                    clan.subs.push(evt.entry);
+                    changeLogs.unshift({ time: timeStr, type: 'ADD', clan: clan.name, details: `新增【替补】：${evt.entry}`, operator: operatorName });
+                }
+            } else if (evt.op === 'REMOVE') {
+                const clan = clans[evt.clanIndex];
+                if (!clan) return;
+                const list = evt.role === 'sub' ? clan.subs : clan.players;
+                const idx = list.indexOf(evt.entry);
+                if (idx !== -1) {
+                    list.splice(idx, 1);
+                    changeLogs.unshift({ time: timeStr, type: 'REMOVE', clan: clan.name, details: `移除：${evt.entry}`, operator: operatorName });
+                }
+            } else if (evt.op === 'UPDATE_ENTRY') {
+                const clan = clans[evt.clanIndex];
+                if (!clan) return;
+                const list = evt.role === 'sub' ? clan.subs : clan.players;
+                const idx = list.indexOf(evt.oldEntry);
+                if (idx !== -1) {
+                    list[idx] = evt.newEntry;
+                    changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `修改报名：${evt.oldEntry} ➔ ${evt.newEntry}`, operator: operatorName });
+                }
+            } else if (evt.op === 'MOVE') {
+                const clan = clans[evt.clanIndex];
+                if (!clan) return;
+                if (evt.direction === 'toSub') {
+                    const idx = clan.players.indexOf(evt.entry);
+                    if (idx !== -1) {
+                        clan.players.splice(idx, 1);
+                        if (!clan.subs) clan.subs = [];
+                        clan.subs.push(evt.entry);
+                        changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `转为替补：${evt.entry}`, operator: operatorName });
+                    }
+                } else if (evt.direction === 'toMain') {
+                    const idx = clan.subs.indexOf(evt.entry);
+                    if (idx !== -1 && clan.players.length < clan.capacity) {
+                        clan.subs.splice(idx, 1);
+                        clan.players.push(evt.entry);
+                        changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `升为正选：${evt.entry}`, operator: operatorName });
+                    }
+                }
+            } else if (evt.op === 'EDIT_CLAN') {
+                const clan = clans[evt.clanIndex];
+                if (!clan) return;
+                Object.assign(clan, evt.data);
+                changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `管理员更新了部落信息`, operator: operatorName });
+            } else if (evt.op === 'EDIT_TITLE') {
+                systemMeta.mainTitle = evt.mainTitle;
+                systemMeta.subTitle = evt.subTitle;
+                changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: '全局设置', details: `更新标题为「${evt.mainTitle}」`, operator: operatorName });
+            } else if (evt.op === 'RESET_ALL') {
+                clans.forEach(c => { c.players = []; c.subs = []; });
+                changeLogs.unshift({ time: timeStr, type: 'REMOVE', clan: '全部部落', details: `管理员清空了所有报名名单`, operator: operatorName });
+            }
+            if (changeLogs.length > 200) changeLogs.pop();
+        }
+
+        async function syncFromCloud(silent = false) {
+            if (isSyncing) return;
+            isSyncing = true;
+            if (!silent) updateSyncBadge('loading', '正在拉取最新名单...');
+
+            try {
+                const res = await fetch(NTFY_POLL_URL + `&t=${Date.now()}`, { method: 'GET' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+
+                const rawText = await res.text();
+                const lines = rawText.trim().split('\n').filter(Boolean);
+
+                systemMeta = JSON.parse(JSON.stringify(defaultMeta));
+                clans = JSON.parse(JSON.stringify(initialClans));
+                changeLogs = [];
+
+                lines.forEach(line => {
+                    try {
+                        const msgObj = JSON.parse(line);
+                        if (msgObj.event === 'message' && msgObj.message) {
+                            const payload = JSON.parse(msgObj.message);
+                            applyEventToState(payload, msgObj.time);
+                        }
+                    } catch (e) {}
+                });
+
+                localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({ clans, logs: changeLogs, meta: systemMeta }));
+                updateSyncBadge('ok', '全群实时同步中 · ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}));
+            } catch (e) {
+                console.warn('同步异常:', e);
+                try {
+                    const cached = JSON.parse(localStorage.getItem(LOCAL_CACHE_KEY));
+                    if (cached) {
+                        clans = cached.clans;
+                        changeLogs = cached.logs || [];
+                        systemMeta = cached.meta || defaultMeta;
+                    }
+                } catch (err) {}
+                updateSyncBadge('error', '网络波动，点击刷新重试');
+            } finally {
+                isSyncing = false;
+                renderSystemMeta();
+                renderClans();
+                renderManagerPanel();
+            }
+        }
+
+        async function pushEventToCloud(payload) {
+            updateSyncBadge('loading', '正在同步至全群...');
+            try {
+                const res = await fetch(NTFY_PUBLISH_URL, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error('发布失败');
+                await syncFromCloud(true);
+                return true;
+            } catch (e) {
+                alert('网络推送失败，请检查网络连接后重试！');
+                updateSyncBadge('error', '推送失败');
+                return false;
+            }
+        }
+
+        function manualRefresh() { syncFromCloud(false); }
+
+        function renderSystemMeta() {
+            document.getElementById('system-main-title').textContent = systemMeta.mainTitle;
+            document.getElementById('system-sub-title').textContent = systemMeta.subTitle;
+            document.title = systemMeta.mainTitle;
+            const editBtn = document.getElementById('edit-title-btn');
+            if (editBtn) {
+                if (isManager) editBtn.classList.remove('hidden');
+                else editBtn.classList.add('hidden');
+            }
+        }
+
+        function renderManagerPanel() {
+            const panel = document.getElementById('manager-control-panel');
+            if (!panel) return;
+            if (isManager) {
+                panel.innerHTML = `
+                    <button onclick="openHistoryModal()" class="bg-amber-600 hover:bg-amber-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1">
+                        <i class="fa-solid fa-clock-rotate-left"></i>
+                        <span>修改记录审计</span>
+                    </button>
+                    <button onclick="resetAllSignupsForNewMonth()" class="bg-rose-600/80 hover:bg-rose-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1" title="新月开启一键清空名单">
+                        <i class="fa-solid fa-rotate"></i>
+                        <span class="hidden sm:inline">清空名单</span>
+                    </button>
+                    <button onclick="logoutManager()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs px-2.5 py-2 rounded-lg font-medium" title="退出管理">
+                        <i class="fa-solid fa-right-from-bracket"></i>
+                    </button>
+                `;
+            } else {
+                panel.innerHTML = `
+                    <button onclick="openManagerLoginModal()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1">
+                        <i class="fa-solid fa-user-shield"></i>
+                        <span>管理员登录</span>
+                    </button>
+                `;
+            }
+        }
+
+        function openManagerLoginModal() {
+            document.getElementById('manager-pwd-input').value = '';
+            document.getElementById('manager-login-modal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('manager-pwd-input').focus(), 100);
+        }
+        function closeManagerLoginModal() { document.getElementById('manager-login-modal').classList.add('hidden'); }
+        function verifyManagerLogin() {
+            const pwd = document.getElementById('manager-pwd-input').value;
+            if (pwd === 'XXXX') {
+                isManager = true;
+                localStorage.setItem('coc_cwl_is_manager_XXXX', 'true');
+                closeManagerLoginModal();
+                renderSystemMeta();
+                renderManagerPanel();
+                renderClans();
+                alert('验证成功，已进入管理员模式！');
+            } else { alert('密码错误！'); }
+        }
+        function logoutManager() {
+            isManager = false;
+            localStorage.removeItem('coc_cwl_is_manager_XXXX');
+            renderSystemMeta();
+            renderManagerPanel();
+            renderClans();
+            alert('已退出管理模式。');
+        }
+
+        function openEditTitleModal() {
+            if (!isManager) return;
+            document.getElementById('input-main-title').value = systemMeta.mainTitle;
+            document.getElementById('input-sub-title').value = systemMeta.subTitle;
+            document.getElementById('edit-title-modal').classList.remove('hidden');
+        }
+        function closeEditTitleModal() { document.getElementById('edit-title-modal').classList.add('hidden'); }
+        async function saveSystemTitle(e) {
+            e.preventDefault();
+            if (!isManager) return;
+            const mainTitle = document.getElementById('input-main-title').value.trim();
+            const subTitle = document.getElementById('input-sub-title').value.trim();
+            const ok = await pushEventToCloud({ op: 'EDIT_TITLE', mainTitle, subTitle, operator: '管理员' });
+            if (ok) {
+                closeEditTitleModal();
+                alert('联赛标题已更新并同步至全群！');
+            }
+        }
+
+        function openEditClanModal(index) {
+            if (!isManager) return;
+            const clan = clans[index];
+            document.getElementById('edit-clan-index').value = index;
+            document.getElementById('edit-clan-name').value = clan.name;
+            document.getElementById('edit-clan-tag').value = clan.tag;
+            document.getElementById('edit-clan-rank').value = clan.rank;
+            document.getElementById('edit-clan-category').value = clan.category;
+            document.getElementById('edit-clan-capacity').value = String(clan.capacity);
+            document.getElementById('edit-clan-time').value = clan.time;
+            document.getElementById('edit-clan-requirement').value = clan.requirement;
+            document.getElementById('edit-clan-modal').classList.remove('hidden');
+        }
+        function closeEditClanModal() { document.getElementById('edit-clan-modal').classList.add('hidden'); }
+        async function saveClanInfo(e) {
+            e.preventDefault();
+            if (!isManager) return;
+            const clanIndex = parseInt(document.getElementById('edit-clan-index').value);
+            const data = {
+                name: document.getElementById('edit-clan-name').value.trim(),
+                tag: document.getElementById('edit-clan-tag').value.trim(),
+                rank: document.getElementById('edit-clan-rank').value.trim(),
+                category: document.getElementById('edit-clan-category').value,
+                capacity: parseInt(document.getElementById('edit-clan-capacity').value),
+                time: document.getElementById('edit-clan-time').value.trim(),
+                requirement: document.getElementById('edit-clan-requirement').value.trim()
+            };
+            const ok = await pushEventToCloud({ op: 'EDIT_CLAN', clanIndex, data, operator: '管理员' });
+            if (ok) {
+                closeEditClanModal();
+                alert('部落信息已更新并同步至全群！');
+            }
+        }
+
+        async function resetAllSignupsForNewMonth() {
+            if (!isManager) return;
+            if (confirm('⚠️ 确定要清空【所有部落】的正选和替补报名名单吗？')) {
+                const ok = await pushEventToCloud({ op: 'RESET_ALL', operator: '管理员' });
+                if (ok) {
+                    mySignups = [];
+                    localStorage.removeItem('coc_cwl_my_entries_v1');
+                    alert('所有报名名单已清空并同步！');
+                }
+            }
+        }
+
+        function openHistoryModal() {
+            const container = document.getElementById('history-list-container');
+            if (!container) return;
+            if (changeLogs.length === 0) {
+                container.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60">暂无修改日志</div>`;
+            } else {
+                container.innerHTML = changeLogs.map(log => {
+                    let badgeClass = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+                    let badgeText = '添加报名';
+                    if (log.type === 'REMOVE') { badgeClass = 'bg-rose-500/20 text-rose-300 border-rose-500/40'; badgeText = '移除记录'; }
+                    else if (log.type === 'EDIT') { badgeClass = 'bg-amber-500/20 text-amber-300 border-amber-500/40'; badgeText = '修改设置'; }
+                    return `
+                        <div class="bg-slate-800/90 border border-slate-700/80 rounded-xl p-3 text-xs space-y-1">
+                            <div class="flex justify-between items-center text-slate-400">
+                                <span class="font-mono text-amber-400"><i class="fa-regular fa-clock mr-1"></i>${log.time}</span>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-semibold border ${badgeClass}">${badgeText}</span>
+                            </div>
+                            <div class="text-slate-200 font-medium">部落：<span class="text-amber-300">${escapeHtml(log.clan)}</span> | 详情：${escapeHtml(log.details)}</div>
+                            <div class="text-[10px] text-slate-400 text-right font-semibold">操作人/身份：<span class="text-sky-400">${escapeHtml(log.operator)}</span></div>
+                        </div>
+                    `;
+                }).join('');
+            }
+            document.getElementById('history-modal').classList.remove('hidden');
+        }
+        function closeHistoryModal() { document.getElementById('history-modal').classList.add('hidden'); }
+
+        function getRankBadgeStyle(rank) {
+            if (rank.includes('冠军')) return 'bg-rose-500/20 text-rose-300 border-rose-500/40';
+            if (rank.includes('泰坦')) return 'bg-purple-500/20 text-purple-300 border-purple-500/40';
+            if (rank.includes('大师')) return 'bg-amber-500/20 text-amber-300 border-amber-500/40';
+            return 'bg-sky-500/20 text-sky-300 border-sky-500/40';
+        }
+
+        function renderClans() {
+            const container = document.getElementById('clans-container');
+            if (!container) return;
+            container.innerHTML = '';
+
+            let totalSigned = 0, totalSubs = 0, totalCap = 0;
+
+            clans.forEach((clan, index) => {
+                const subsList = clan.subs || [];
+                totalSigned += clan.players.length;
+                totalSubs += subsList.length;
+                totalCap += clan.capacity;
+
+                if (currentFilter !== 'all' && clan.category !== currentFilter) return;
+
+                const isFull = clan.players.length >= clan.capacity;
+                const progressPercent = Math.min(100, Math.round((clan.players.length / clan.capacity) * 100));
+                const card = document.createElement('div');
+                card.className = 'bg-slate-800/80 border border-slate-700/80 rounded-2xl p-5 shadow-lg space-y-4';
+
+                const playersHtml = clan.players.length > 0
+                    ? clan.players.map((p, pIdx) => {
+                        const isMyEntry = mySignups.includes(p);
+                        return `
+                            <div class="flex items-center justify-between ${isMyEntry ? 'bg-amber-950/40 border-amber-500/50' : 'bg-slate-900/80 border-slate-700/60'} border px-3 py-1.5 rounded-lg text-xs">
+                                <span class="${isMyEntry ? 'text-amber-300 font-bold' : 'text-slate-200'} flex items-center gap-1.5 truncate">
+                                    <span class="text-amber-400 font-mono">${pIdx + 1}.</span>
+                                    <span class="truncate">${escapeHtml(p)}</span>
+                                    ${isMyEntry ? '<span class="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.2 rounded border border-amber-500/30">我</span>' : ''}
+                                </span>
+                                <div class="flex items-center gap-1.5 ml-2 shrink-0">
+                                    ${(isMyEntry || isManager) ? `
+                                        <button onclick="openEditMySignupModal(${index}, '${escapeQuotes(p)}', 'main')" title="修改我的报名" class="text-xs bg-slate-700 hover:bg-amber-500 hover:text-slate-900 text-amber-300 px-2 py-0.5 rounded transition">
+                                            <i class="fa-solid fa-pen"></i> 改
+                                        </button>
+                                    ` : ''}
+                                    ${isManager ? `
+                                        <button onclick="movePlayerRole(${index}, ${pIdx}, 'toSub')" title="转为替补" class="text-slate-400 hover:text-sky-400 transition px-1"><i class="fa-solid fa-arrow-down"></i></button>
+                                        <button onclick="removePlayer(${index}, ${pIdx}, 'main')" title="管理员移除" class="text-slate-400 hover:text-rose-400 transition px-1"><i class="fa-solid fa-trash-can"></i></button>
+                                    ` : ''}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')
+                    : `<div class="col-span-full text-center py-4 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60">暂无人报名正选</div>`;
+
+                const subsHtml = subsList.length > 0
+                    ? subsList.map((s, sIdx) => {
+                        const isMyEntry = mySignups.includes(s);
+                        return `
+                            <div class="flex items-center justify-between ${isMyEntry ? 'bg-sky-950/60 border-sky-400/60' : 'bg-sky-950/40 border-sky-700/40'} border px-3 py-1.5 rounded-lg text-xs">
+                                <span class="${isMyEntry ? 'text-sky-200 font-bold' : 'text-sky-300'} flex items-center gap-1.5 truncate">
+                                    <span class="text-sky-400 font-mono">替${sIdx + 1}.</span>
+                                    <span class="truncate">${escapeHtml(s)}</span>
+                                    ${isMyEntry ? '<span class="text-[10px] bg-sky-500/20 text-sky-200 px-1.5 py-0.2 rounded border border-sky-500/30">我</span>' : ''}
+                                </span>
+                                <div class="flex items-center gap-1.5 ml-2 shrink-0">
+                                    ${(isMyEntry || isManager) ? `
+                                        <button onclick="openEditMySignupModal(${index}, '${escapeQuotes(s)}', 'sub')" title="修改我的替补" class="text-xs bg-slate-700 hover:bg-sky-500 hover:text-slate-950 text-sky-300 px-2 py-0.5 rounded transition">
+                                            <i class="fa-solid fa-pen"></i> 改
+                                        </button>
+                                    ` : ''}
+                                    ${isManager ? `
+                                        <button onclick="movePlayerRole(${index}, ${sIdx}, 'toMain')" title="升为正选" class="text-slate-400 hover:text-amber-400 transition px-1"><i class="fa-solid fa-arrow-up"></i></button>
+                                        <button onclick="removePlayer(${index}, ${sIdx}, 'sub')" title="管理员移除" class="text-slate-400 hover:text-rose-400 transition px-1"><i class="fa-solid fa-trash-can"></i></button>
+                                    ` : ''}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')
+                    : `<div class="text-xs text-slate-500 italic">暂无替补人员</div>`;
+
+                card.innerHTML = `
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-700/70 pb-3">
+                        <div class="space-y-1">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <h3 class="font-bold text-base text-white">${escapeHtml(clan.name)}</h3>
+                                <span class="text-xs px-2.5 py-0.5 rounded-full border font-semibold ${getRankBadgeStyle(clan.rank)}">${escapeHtml(clan.rank)}</span>
+                                <span class="text-xs font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-700 cursor-pointer hover:text-amber-400" onclick="copyText('${clan.tag}')">${escapeHtml(clan.tag)} <i class="fa-regular fa-copy text-[10px]"></i></span>
+                                ${isManager ? `<button onclick="openEditClanModal(${index})" class="text-xs bg-slate-700 hover:bg-amber-500 hover:text-slate-900 text-amber-400 px-2 py-0.5 rounded border border-slate-600 transition"><i class="fa-solid fa-pen-to-square"></i> 修改</button>` : ''}
+                            </div>
+                            <p class="text-xs text-slate-400"><i class="fa-regular fa-clock text-amber-400 mr-1"></i>开战时间：${escapeHtml(clan.time)}</p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <div class="text-right">
+                                <div class="text-xs font-mono font-bold ${isFull ? 'text-rose-400' : 'text-emerald-400'}">正选 ${clan.players.length}/${clan.capacity} ${subsList.length > 0 ? `<span class="text-sky-400 ml-1">(替${subsList.length})</span>` : ''}</div>
+                                <div class="w-28 h-1.5 bg-slate-900 rounded-full overflow-hidden mt-1"><div class="h-full ${isFull ? 'bg-rose-500' : 'bg-amber-500'}" style="width: ${progressPercent}%"></div></div>
+                            </div>
+                            <button onclick="openSignupModal(${index})" class="${isFull ? 'bg-sky-500 hover:bg-sky-400 text-slate-950' : 'bg-amber-500 hover:bg-amber-400 text-slate-900'} shadow font-bold text-xs px-4 py-2 rounded-xl transition whitespace-nowrap">${isFull ? '+ 报名替补' : '+ 我要报名'}</button>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 border border-slate-700/50 rounded-xl px-3.5 py-2.5 text-xs text-slate-300 leading-relaxed">
+                        <span class="text-amber-400 font-semibold"><i class="fa-solid fa-circle-info mr-1"></i>报名要求：</span>${escapeHtml(clan.requirement)}
+                    </div>
+                    <div class="space-y-3">
+                        <div>
+                            <div class="text-xs font-semibold text-slate-400 mb-2">已报名正选名单：</div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">${playersHtml}</div>
+                        </div>
+                        <div class="pt-2 border-t border-slate-700/50">
+                            <div class="text-xs font-semibold text-sky-400 mb-2"><i class="fa-solid fa-user-clock"></i> 替补席位 (${subsList.length}人)：</div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">${subsHtml}</div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+
+            const statsEl = document.getElementById('total-stats');
+            if (statsEl) statsEl.textContent = `正选：${totalSigned}/${totalCap} | 替补：${totalSubs} 人`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        function escapeQuotes(str) {
+            return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        }
+
+        function filterClan(category, event) {
+            currentFilter = category;
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('bg-amber-500', 'text-slate-900', 'font-bold');
+                btn.classList.add('bg-slate-700', 'text-slate-300');
+            });
+            if (event && event.currentTarget) {
+                event.currentTarget.classList.remove('bg-slate-700', 'text-slate-300');
+                event.currentTarget.classList.add('bg-amber-500', 'text-slate-900', 'font-bold');
+            }
+            renderClans();
+        }
+
+        function openSignupModal(index) {
+            const clan = clans[index];
+            const isFull = clan.players.length >= clan.capacity;
+            document.getElementById('modal-clan-index').value = index;
+            document.getElementById('modal-title').textContent = `报名：${clan.name} (${clan.rank})`;
+            document.getElementById('modal-clan-requirement').textContent = `要求：${clan.requirement}`;
+            document.getElementById('modal-clan-time').textContent = `开战时间：${clan.time}`;
+            document.getElementById('player-name').value = '';
+
+            const roleMain = document.getElementById('role-main');
+            const roleSub = document.getElementById('role-sub');
+            const roleHint = document.getElementById('role-hint');
+
+            if (isFull) {
+                roleMain.disabled = true;
+                roleSub.checked = true;
+                roleHint.textContent = "该部落正选已满，已自动切换为「替补席位」。";
+                roleHint.classList.remove('hidden');
+            } else {
+                roleMain.disabled = false;
+                roleMain.checked = true;
+                roleHint.classList.add('hidden');
+            }
+            document.getElementById('signup-modal').classList.remove('hidden');
+        }
+        function closeModal() { document.getElementById('signup-modal').classList.add('hidden'); }
+
+        async function handleSignup(e) {
+            e.preventDefault();
+            const btn = document.getElementById('submit-signup-btn');
+            btn.disabled = true;
+            btn.textContent = '同步提交中...';
+
+            try {
+                await syncFromCloud(true);
+                const clanIndex = parseInt(document.getElementById('modal-clan-index').value);
+                const name = document.getElementById('player-name').value.trim();
+                const th = document.getElementById('player-th').value;
+                const role = document.querySelector('input[name="signup-role"]:checked').value;
+                if (!name) return;
+
+                const entry = th ? `${name} ${th}` : name;
+                const clan = clans[clanIndex];
+
+                if (role === 'main' && clan.players.length >= clan.capacity) {
+                    alert('手慢一步，该部落正选刚刚已满，请切换为替补！');
+                    return;
+                }
+
+                const operatorLabel = isManager ? '管理员' : name;
+                const ok = await pushEventToCloud({ op: 'SIGNUP', clanIndex, role, entry, operator: operatorLabel });
+                if (ok) {
+                    if (!mySignups.includes(entry)) {
+                        mySignups.push(entry);
+                        localStorage.setItem('coc_cwl_my_entries_v1', JSON.stringify(mySignups));
+                    }
+                    closeModal();
+                    alert('报名成功，全群已实时同步！');
+                }
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '确认报名';
+            }
+        }
+
+        // 自主修改/取消我的报名弹窗
+        function openEditMySignupModal(clanIndex, entryText, role) {
+            document.getElementById('edit-my-clan-index').value = clanIndex;
+            document.getElementById('edit-my-old-entry').value = entryText;
+            document.getElementById('edit-my-role').value = role;
+            
+            // 尝试将昵称和大本分拆显示
+            let parts = entryText.split(' ');
+            let thPart = '';
+            let namePart = entryText;
+            if (parts.length > 1 && ['19本','18本','17本','16本','15本及以下'].includes(parts[parts.length-1])) {
+                thPart = parts[parts.length-1];
+                namePart = parts.slice(0, parts.length-1).join(' ');
+            }
+            document.getElementById('edit-my-player-name').value = namePart;
+            document.getElementById('edit-my-player-th').value = thPart;
+            document.getElementById('edit-my-signup-modal').classList.remove('hidden');
+        }
+        function closeEditMySignupModal() { document.getElementById('edit-my-signup-modal').classList.add('hidden'); }
+
+        async function handleUpdateMySignup(e) {
+            e.preventDefault();
+            const clanIndex = parseInt(document.getElementById('edit-my-clan-index').value);
+            const oldEntry = document.getElementById('edit-my-old-entry').value;
+            const role = document.getElementById('edit-my-role').value;
+            const newName = document.getElementById('edit-my-player-name').value.trim();
+            const newTh = document.getElementById('edit-my-player-th').value;
+            if (!newName) return;
+
+            const newEntry = newTh ? `${newName} ${newTh}` : newName;
+            const operatorLabel = isManager ? '管理员' : newName;
+
+            const ok = await pushEventToCloud({ op: 'UPDATE_ENTRY', clanIndex, role, oldEntry, newEntry, operator: operatorLabel });
+            if (ok) {
+                // 更新本地标记
+                mySignups = mySignups.map(item => item === oldEntry ? newEntry : item);
+                if (!mySignups.includes(newEntry)) mySignups.push(newEntry);
+                localStorage.setItem('coc_cwl_my_entries_v1', JSON.stringify(mySignups));
+                closeEditMySignupModal();
+                alert('修改成功，已实时同步至全群！');
+            }
+        }
+
+        async function handleDeleteMySignup() {
+            const clanIndex = parseInt(document.getElementById('edit-my-clan-index').value);
+            const oldEntry = document.getElementById('edit-my-old-entry').value;
+            const role = document.getElementById('edit-my-role').value;
+
+            if (confirm(`确定要退赛/取消报名「${oldEntry}」吗？`)) {
+                const operatorLabel = isManager ? '管理员' : oldEntry.split(' ')[0];
+                const ok = await pushEventToCloud({ op: 'REMOVE', clanIndex, role, entry: oldEntry, operator: operatorLabel });
+                if (ok) {
+                    mySignups = mySignups.filter(item => item !== oldEntry);
+                    localStorage.setItem('coc_cwl_my_entries_v1', JSON.stringify(mySignups));
+                    closeEditMySignupModal();
+                    alert('已成功取消报名！');
+                }
+            }
+        }
+
+        async function movePlayerRole(clanIndex, itemIndex, direction) {
+            if (!isManager) return;
+            const clan = clans[clanIndex];
+            const entry = direction === 'toSub' ? clan.players[itemIndex] : clan.subs[itemIndex];
+            if (direction === 'toMain' && clan.players.length >= clan.capacity) {
+                alert('正选已满，无法升为正选！');
+                return;
+            }
+            await pushEventToCloud({ op: 'MOVE', clanIndex, direction, entry, operator: '管理员' });
+        }
+
+        async function removePlayer(clanIndex, playerIndex, role) {
+            if (!isManager) return;
+            const clan = clans[clanIndex];
+            const list = role === 'sub' ? clan.subs : clan.players;
+            const entry = list[playerIndex];
+            if (confirm(`确定要管理员移除「${entry}」吗？`)) {
+                await pushEventToCloud({ op: 'REMOVE', clanIndex, role, entry, operator: '管理员' });
+            }
+        }
+
+        function openExportModal() {
+            const lines = [`🛡️ 【${systemMeta.mainTitle}实时简报】`];
+            clans.forEach(c => {
+                const listStr = c.players.length > 0 ? c.players.join('、') : '暂无';
+                const subsStr = (c.subs && c.subs.length > 0) ? `\n  替补(${c.subs.length}人): ${c.subs.join('、')}` : '';
+                lines.push(`\n▸ ${c.name} [${c.rank}] (正选 ${c.players.length}/${c.capacity}人)\n  标签: ${c.tag} | 正选: ${listStr}${subsStr}`);
+            });
+            const cleanUrl = window.location.href.split('#')[0];
+            lines.push(`\n👉 点击直接打开实时报名（支持随时自主修改/取消）：${cleanUrl}`);
+            document.getElementById('export-textarea').value = lines.join('');
+            document.getElementById('export-modal').classList.remove('hidden');
+        }
+
+        function closeExportModal() { document.getElementById('export-modal').classList.add('hidden'); }
+        function copyExportText() {
+            const textarea = document.getElementById('export-textarea');
+            textarea.select();
+            try { document.execCommand('copy'); alert('简报已复制！可直接粘贴到微信群。'); }
+            catch (e) { alert('请手动复制'); }
+        }
+        function copyText(text) {
+            navigator.clipboard.writeText(text).then(() => alert(`已复制：${text}`));
+        }
+
+        window.onload = async function() {
+            renderSystemMeta();
+            renderManagerPanel();
+            renderClans();
+            await syncFromCloud(false);
+
+            // 每 10 秒自动在后台同步一次最新全群状态
+            setInterval(() => {
+                if (document.visibilityState === 'visible') {
+                    syncFromCloud(true);
+                }
+            }, 10000);
+        };
+    </script>
+</body>
+</html>
