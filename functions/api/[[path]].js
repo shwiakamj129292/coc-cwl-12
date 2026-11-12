@@ -668,6 +668,13 @@ export async function onRequest({ request, env }) {
   try {
     return await handle(request, env);
   } catch (error) {
+    console.error("Worker API error:", {
+      message: error?.message,
+      stack: error?.stack,
+      url: request?.url,
+      method: request?.method
+    });
+
     if (error instanceof HttpError) return json({ error: error.message }, error.status);
     return json({ error: "服务器内部错误" }, 500);
   }
