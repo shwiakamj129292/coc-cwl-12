@@ -1,11 +1,13 @@
 {
   "name": "coc-cwl-signup",
   "version": "2.0.0",
-  "description": "部落冲突 联赛统一报名系统（Node + SQLite，服务端鉴权）",
+  "description": "部落冲突联赛报名系统（Cloudflare Pages + D1）",
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "build": "mkdir -p dist && cp index.html dist/index.html",
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22.5"

@@ -431,17 +431,17 @@
                     body: body ? JSON.stringify(body) : undefined
                 });
             } catch (e) {
-                throw new Error('无法连接报名服务。请确认已部署 Node 后端；GitHub Pages 只能托管静态网页，不能处理报名。');
+                throw new Error('无法连接报名服务。请稍后刷新页面，或联系管理员检查 Cloudflare Pages 服务。');
             }
             if (!(res.headers.get('content-type') || '').includes('application/json')) {
-                throw new Error('当前网址没有连接到报名 API。请访问已部署的 Node 服务地址，不能使用 GitHub Pages 静态链接报名。');
+                throw new Error('当前网址未连接报名 API。请使用 Cloudflare Pages 提供的报名链接。');
             }
             let data = {};
             try { data = await res.json(); } catch(e) {}
             if (!res.ok) {
                 const message = data.error || data.message || ('HTTP ' + res.status);
                 const err = new Error(res.status === 404
-                    ? '报名 API 不存在。GitHub Pages 是静态托管，请改用已部署的 Node 服务网址。'
+                    ? '报名 API 不存在。请联系管理员检查 Cloudflare Pages Functions 部署。'
                     : message);
                 err.status = res.status; err.data = data;
                 throw err;
@@ -482,7 +482,7 @@
             isFetching = true;
             if (force) updateSyncBadge('loading', '正在拉取最新名单...');
             try {
-                const data = await api('/api/state' + (rev >= 0 ? `?rev=${rev}` : ''));
+                const data = await api('/api/state' + (rev >= 0 ? `?rev=${rev}` : ''), { device: true, auth: true });
                 if (!data.unchanged) applyState(data);
                 updateSyncBadge('ok', '全群实时同步中 · ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}));
             } catch (e) {
