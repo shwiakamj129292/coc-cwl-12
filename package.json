@@ -1,0 +1,13 @@
+{
+  "name": "coc-cwl-signup",
+  "version": "2.0.0",
+  "description": "部落冲突 联赛统一报名系统（Node + SQLite，服务端鉴权）",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
