@@ -64,7 +64,7 @@
                     <span id="total-stats" class="text-xs bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-700 text-amber-400 font-mono">统计加载中...</span>
                     <div class="flex items-center gap-2">
                         <span id="sync-badge" class="text-[11px] text-amber-400 flex items-center gap-1">
-                            <i class="fa-solid fa-spinner fa-spin"></i> 正在连接公共频道...
+                            <i class="fa-solid fa-spinner fa-spin"></i> 正在连接服务器...
                         </span>
                         <button onclick="manualRefresh()" class="text-[11px] bg-slate-700 hover:bg-slate-600 text-slate-200 px-2 py-0.5 rounded transition" title="立即从云端刷新">
                             <i class="fa-solid fa-arrows-rotate"></i> 刷新
@@ -225,7 +225,7 @@
                 <button onclick="closeEditClanModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <form onsubmit="saveClanInfo(event)" class="space-y-3">
-                <input type="hidden" id="edit-clan-index">
+                <input type="hidden" id="edit-clan-id">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                         <label class="block text-xs font-medium text-slate-300 mb-1">部落名称：</label>
@@ -302,7 +302,7 @@
             </div>
             <div class="flex space-x-3 pt-2">
                 <button type="button" onclick="closeManagerLoginModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
-                <button type="button" onclick="verifyManagerLogin()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">登录</button>
+                <button type="button" id="manager-login-btn" onclick="verifyManagerLogin()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">登录</button>
             </div>
         </div>
     </div>
@@ -356,11 +356,11 @@
     </div>
 
     <script>
-        const NTFY_TOPIC = "coc_cwl_sync_room_XXXX_x89a2_v1";
-        const NTFY_PUBLISH_URL = `https://ntfy.sh/${NTFY_TOPIC}`;
-        const NTFY_POLL_URL = `https://ntfy.sh/${NTFY_TOPIC}/json?poll=1&since=all`;
-        const LOCAL_CACHE_KEY = "coc_cwl_ntfy_cache_v3";
-        const USER_TOKEN_KEY = "coc_cwl_user_identity_token_v1";
+        // 后端 API 基地址：与页面同源（由 server.js 提供）
+        const API_BASE = '';
+        const DEVICE_TOKEN_KEY = "coc_cwl_device_token_v2";
+        const ADMIN_TOKEN_KEY = "coc_cwl_admin_token_v2";
+        const STATE_CACHE_KEY = "coc_cwl_state_cache_v2";
 
         // ===== 段位遴选：配色盘 + 可选颜色（保存完整类名，避免运行期拼接失效） =====
         const RANK_PALETTES = {
@@ -388,7 +388,7 @@
             { key: 'slate', label: '灰' }
         ];
 
-        // 段位库默认值：{ value: 归类键值, label: 展示名, color: 配色键 }
+        // 段位库默认值（仅当后端不可用时用于兜底展示）
         const defaultRankOptions = [
             { value: '冠军3', label: '冠军3', color: 'rose' },
             { value: '泰坦3', label: '泰坦3', color: 'purple' },
@@ -399,144 +399,103 @@
         ];
         let rankOptions = JSON.parse(JSON.stringify(defaultRankOptions));
 
-        // 自动为每个用户生成唯一身份符号（如 #U-8A3F9）
-        function getOrCreateUserToken() {
-            let token = '';
-            try { token = localStorage.getItem(USER_TOKEN_KEY); } catch(e) {}
-            if (!token) {
-                const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-                let rand = '';
-                for (let i = 0; i < 5; i++) {
-                    rand += chars.charAt(Math.floor(Math.random() * chars.length));
-                }
-                token = `#U-${rand}`;
-                try { localStorage.setItem(USER_TOKEN_KEY, token); } catch(e) {}
-            }
-            return token;
-        }
-
-        const MY_USER_TOKEN = getOrCreateUserToken();
-
         const defaultMeta = {
             mainTitle: "COC 12月联赛统一报名",
             subTitle: "微信群专属防刷屏多部落同步报名系统"
         };
 
-        // 辅助包装初始预置名单（归属为预设名单 #SYS）
-        function wrapInitialPlayers(names) {
-            return names.map((name, idx) => ({
-                id: `init_${idx}_${name}`,
-                text: name,
-                ownerToken: '#SYS_PRESET'
-            }));
+        // ===== 运行期状态 =====
+        let systemMeta = JSON.parse(JSON.stringify(defaultMeta));
+        let clans = [];
+        let logsData = [];
+        let deviceToken = '';
+        let adminToken = '';
+        let isManager = false;
+        let currentFilter = 'all';
+        let rev = -1;
+        let isFetching = false;
+
+        try { deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY) || ''; } catch(e) {}
+        try { adminToken = localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch(e) {}
+
+        // ===== 通用 API 请求封装 =====
+        async function api(path, options = {}) {
+            const { method = 'GET', body = null, auth = false, device = false } = options;
+            const headers = { 'Content-Type': 'application/json' };
+            if (device && deviceToken) headers['X-Device-Token'] = deviceToken;
+            if (auth && adminToken) headers['Authorization'] = 'Bearer ' + adminToken;
+            const res = await fetch(API_BASE + path, {
+                method, headers, cache: 'no-store',
+                body: body ? JSON.stringify(body) : undefined
+            });
+            let data = {};
+            try { data = await res.json(); } catch(e) {}
+            if (!res.ok) {
+                const err = new Error(data.error || data.message || ('HTTP ' + res.status));
+                err.status = res.status; err.data = data;
+                throw err;
+            }
+            return data;
         }
 
-        const initialClans = [
-            {
-                id: "xiyang",
-                name: "夕阳之秋 (晋级组)",
-                tag: "#2PRCUGGJJ",
-                rank: "泰坦3",
-                category: "泰坦3",
-                capacity: 15,
-                time: "12月1号（下午4点）",
-                requirement: "至少传奇2段位(至少一个号）；考核：传奇1模式 3进2（传奇1段位无需考核）",
-                players: wrapInitialPlayers(["永恒星河✨洛", "神话再现✨洛", "黎明之夏✨洛", "春暖花开✨洛", "终为向日✨洛", "荧光之夜✨洛", "大千世界✨洛", "幽冥鬼域✨洛", "雨后春笋✨洛", "夜林之溪✨洛", "闪电龙骑士", "Allenyip"]),
-                subs: []
-            },
-            {
-                id: "shikong",
-                name: "时空之旅 (晋级组)",
-                tag: "#2J002JY80",
-                rank: "冠军3",
-                category: "冠军3",
-                capacity: 15,
-                time: "12月1号（下午4点）",
-                requirement: "至少传奇3段位（至少一个号）；考核：传奇3模式 4进3（传奇2及以上无需考核）",
-                players: wrapInitialPlayers(["皇家禁卫军 18本", "皇家守护者 18本", "womeiyouwen 18本", "karina 18本"]),
-                subs: []
-            },
-            {
-                id: "piaoxue",
-                name: "飘雪城",
-                tag: "#2CRVVYQPJ",
-                rank: "冠军3",
-                category: "冠军3",
-                capacity: 15,
-                time: "12月1号（下午4点后）",
-                requirement: "19本、18本（最多5个）有打19本3星实力；上次大师1/冠3/泰坦3有18星以上可直接报名，其他找梦幻巧克力审核",
-                players: wrapInitialPlayers(["凛冬 19本", "林村 19本"]),
-                subs: []
-            },
-            {
-                id: "xuejingling",
-                name: "雪精灵",
-                tag: "#2GPUCRVR2",
-                rank: "大师2",
-                category: "大师",
-                capacity: 30,
-                time: "12月1号（下午4点后）",
-                requirement: "19本、18本、17本（最多5个）；7次次数必须用完，不可漏刀",
-                players: [],
-                subs: []
-            },
-            {
-                id: "huoyan",
-                name: "火焰部落！",
-                tag: "#Y8UR2GYP",
-                rank: "大师3",
-                category: "大师",
-                capacity: 30,
-                time: "12月1号（下午4点后）",
-                requirement: "19本、18本、17本；7次次数必须用完，不可漏刀",
-                players: [],
-                subs: []
-            },
-            {
-                id: "siyue",
-                name: "四月是你的谎言 (保级组)",
-                tag: "#2JLLVYUVJ",
-                rank: "水晶2",
-                category: "水晶2",
-                capacity: 30,
-                time: "12月1号（下午4点）",
-                requirement: "无大本营等级限制，积极进攻就行",
-                players: [],
-                subs: []
-            },
-            {
-                id: "bingjingling",
-                name: "冰精灵",
-                tag: "#2QJPQ88LJ",
-                rank: "水晶2",
-                category: "水晶2",
-                capacity: 30,
-                time: "12月1号（下午4点后）",
-                requirement: "1到19本都可参加",
-                players: wrapInitialPlayers(["皇家隐秘者 14本"]),
-                subs: []
+        // 首次访问向服务端申请随机设备令牌（替代原先本地可预测的 #U-令牌）
+        async function ensureDeviceToken() {
+            if (deviceToken) return deviceToken;
+            const data = await api('/api/device', { method: 'POST' });
+            deviceToken = data.deviceToken;
+            try { localStorage.setItem(DEVICE_TOKEN_KEY, deviceToken); } catch(e) {}
+            return deviceToken;
+        }
+
+        // 校验已保存的管理端令牌是否仍然有效
+        async function checkAdminSession() {
+            if (!adminToken) return false;
+            try { const data = await api('/api/admin/check', { auth: true }); return !!data.ok; }
+            catch (e) { return false; }
+        }
+
+        function saveStateCache() {
+            try { localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({ meta: systemMeta, rankOptions, clans })); } catch(e) {}
+        }
+        function applyState(data) {
+            systemMeta = data.meta || systemMeta;
+            rankOptions = Array.isArray(data.rankOptions) && data.rankOptions.length ? data.rankOptions : rankOptions;
+            clans = Array.isArray(data.clans) ? data.clans : [];
+            rev = data.rev;
+            saveStateCache();
+        }
+
+        // 从服务端拉取权威状态（带 rev 版本号，无变化则跳过重绘）
+        async function fetchState(force = false) {
+            if (isFetching) return;
+            isFetching = true;
+            if (force) updateSyncBadge('loading', '正在拉取最新名单...');
+            try {
+                const data = await api('/api/state' + (rev >= 0 ? `?rev=${rev}` : ''));
+                if (!data.unchanged) applyState(data);
+                updateSyncBadge('ok', '全群实时同步中 · ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}));
+            } catch (e) {
+                console.warn('同步异常:', e);
+                if (clans.length === 0) {
+                    try {
+                        const cached = JSON.parse(localStorage.getItem(STATE_CACHE_KEY));
+                        if (cached) { systemMeta = cached.meta || systemMeta; rankOptions = cached.rankOptions || rankOptions; clans = cached.clans || []; }
+                    } catch(err) {}
+                }
+                updateSyncBadge('error', '网络波动，点击刷新重试');
+            } finally {
+                isFetching = false;
+                renderSystemMeta();
+                renderClans();
+                renderManagerPanel();
             }
-        ];
-
-        let systemMeta = JSON.parse(JSON.stringify(defaultMeta));
-        let clans = JSON.parse(JSON.stringify(initialClans));
-        let changeLogs = [];
-        // 全局归集映射：ownerToken -> Set of { clanName, role, text, entryId, lastActive }
-        let userBindingsMap = {}; 
-
-        let isManager = false;
-        try { isManager = localStorage.getItem('coc_cwl_is_manager_XXXX') === 'true'; } catch(e) {}
-        
-        let currentFilter = 'all';
-        let isSyncing = false;
-        let lastPushTimestamp = 0;
+        }
 
         function copyMyToken() {
-            navigator.clipboard.writeText(MY_USER_TOKEN).then(() => {
-                alert(`已复制你的专属认证符号：${MY_USER_TOKEN}`);
-            }).catch(() => alert(`你的专属认证符号是：${MY_USER_TOKEN}`));
+            navigator.clipboard.writeText(deviceToken).then(() => {
+                alert(`已复制你的专属认证符号：${deviceToken}`);
+            }).catch(() => alert(`你的专属认证符号是：${deviceToken}`));
         }
-
         function updateSyncBadge(status, text) {
             const badge = document.getElementById('sync-badge');
             if (!badge) return;
@@ -552,246 +511,46 @@
             }
         }
 
-        function recordBinding(ownerToken, clanName, roleText, entryText, timeStr) {
-            if (!ownerToken || ownerToken === '#SYS_PRESET') return;
-            if (!userBindingsMap[ownerToken]) {
-                userBindingsMap[ownerToken] = {
-                    token: ownerToken,
-                    historyNames: new Set(),
-                    activeAccounts: [],
-                    lastActive: timeStr
-                };
-            }
-            userBindingsMap[ownerToken].historyNames.add(entryText);
-            userBindingsMap[ownerToken].lastActive = timeStr;
-        }
-
-        function rebuildActiveBindings() {
-            // 清理并重新计算当前活跃账号列表
-            Object.values(userBindingsMap).forEach(u => u.activeAccounts = []);
+        // 从当前权威状态推导「设备令牌 → 在列报名」绑定总览（服务端已校验归属，这里仅做展示）
+        function computeBindings() {
+            const map = {};
+            const ensure = (tok) => {
+                if (!map[tok]) map[tok] = { token: tok, activeAccounts: [], historyNames: new Set() };
+                return map[tok];
+            };
             clans.forEach(c => {
                 c.players.forEach(p => {
-                    if (p.ownerToken && userBindingsMap[p.ownerToken]) {
-                        userBindingsMap[p.ownerToken].activeAccounts.push({
-                            clan: c.name,
-                            role: '正选',
-                            name: p.text
-                        });
+                    if (p.ownerToken && p.ownerToken !== '#SYS_PRESET') {
+                        const u = ensure(p.ownerToken);
+                        u.activeAccounts.push({ clan: c.name, role: '正选', name: p.text });
+                        u.historyNames.add(p.text);
                     }
                 });
                 (c.subs || []).forEach(s => {
-                    if (s.ownerToken && userBindingsMap[s.ownerToken]) {
-                        userBindingsMap[s.ownerToken].activeAccounts.push({
-                            clan: c.name,
-                            role: '替补',
-                            name: s.text
-                        });
+                    if (s.ownerToken && s.ownerToken !== '#SYS_PRESET') {
+                        const u = ensure(s.ownerToken);
+                        u.activeAccounts.push({ clan: c.name, role: '替补', name: s.text });
+                        u.historyNames.add(s.text);
                     }
                 });
             });
+            // 从审计日志补充历史曾用名
+            logsData.forEach(log => {
+                if (log.token && map[log.token]) {
+                    const m = /：(.+)$/.exec(log.details || '');
+                    if (m) map[log.token].historyNames.add(m[1]);
+                }
+            });
+            return Object.values(map);
         }
 
-        function applyEventToState(evt, evtTime) {
-            if (!evt || !evt.op) return;
-            const timeStr = evtTime ? new Date(evtTime * 1000).toLocaleString('zh-CN', { hour12: false }) : new Date().toLocaleString('zh-CN', { hour12: false });
-            const actorToken = evt.ownerToken || '未知符号';
-            const operatorLabel = evt.isAdminOp ? `管理员 (${actorToken})` : `${evt.operator || '群友'} [${actorToken}]`;
-
-            if (evt.op === 'SIGNUP') {
-                const clan = clans[evt.clanIndex];
-                if (!clan) return;
-                const entryObj = {
-                    id: evt.entryId || `e_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
-                    text: evt.entry,
-                    ownerToken: actorToken
-                };
-                if (evt.role === 'main') {
-                    if (clan.players.length < clan.capacity) {
-                        clan.players.push(entryObj);
-                        recordBinding(actorToken, clan.name, '正选', evt.entry, timeStr);
-                        changeLogs.unshift({ time: timeStr, type: 'ADD', clan: clan.name, details: `新增【正选】：${evt.entry}`, operator: operatorLabel, token: actorToken });
-                    }
-                } else {
-                    if (!clan.subs) clan.subs = [];
-                    clan.subs.push(entryObj);
-                    recordBinding(actorToken, clan.name, '替补', evt.entry, timeStr);
-                    changeLogs.unshift({ time: timeStr, type: 'ADD', clan: clan.name, details: `新增【替补】：${evt.entry}`, operator: operatorLabel, token: actorToken });
-                }
-            } else if (evt.op === 'REMOVE') {
-                const clan = clans[evt.clanIndex];
-                if (!clan) return;
-                const list = evt.role === 'sub' ? clan.subs : clan.players;
-                const idx = evt.entryId 
-                    ? list.findIndex(item => item.id === evt.entryId)
-                    : list.findIndex(item => item.text === evt.entry);
-                if (idx !== -1) {
-                    const removed = list.splice(idx, 1)[0];
-                    changeLogs.unshift({ time: timeStr, type: 'REMOVE', clan: clan.name, details: `移除/退赛：${removed.text}`, operator: operatorLabel, token: actorToken });
-                }
-            } else if (evt.op === 'UPDATE_ENTRY') {
-                const clan = clans[evt.clanIndex];
-                if (!clan) return;
-                const list = evt.role === 'sub' ? clan.subs : clan.players;
-                const idx = evt.entryId 
-                    ? list.findIndex(item => item.id === evt.entryId)
-                    : list.findIndex(item => item.text === evt.oldEntry);
-                if (idx !== -1) {
-                    const target = list[idx];
-                    // 权限校验：仅允许原绑定者或管理员修改
-                    if (evt.isAdminOp || target.ownerToken === actorToken || target.ownerToken === '#SYS_PRESET') {
-                        const prevText = target.text;
-                        target.text = evt.newEntry;
-                        if (target.ownerToken === '#SYS_PRESET' && !evt.isAdminOp) {
-                            target.ownerToken = actorToken; // 认领预设历史名单
-                        }
-                        recordBinding(target.ownerToken, clan.name, evt.role === 'sub' ? '替补' : '正选', evt.newEntry, timeStr);
-                        changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `修改报名：${prevText} ➔ ${evt.newEntry}`, operator: operatorLabel, token: actorToken });
-                    }
-                }
-            } else if (evt.op === 'MOVE') {
-                const clan = clans[evt.clanIndex];
-                if (!clan) return;
-                if (evt.direction === 'toSub') {
-                    const idx = clan.players.findIndex(item => item.id === evt.entryId || item.text === evt.entry);
-                    if (idx !== -1) {
-                        const moved = clan.players.splice(idx, 1)[0];
-                        if (!clan.subs) clan.subs = [];
-                        clan.subs.push(moved);
-                        changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `转为替补：${moved.text}`, operator: operatorLabel, token: actorToken });
-                    }
-                } else if (evt.direction === 'toMain') {
-                    const idx = clan.subs.findIndex(item => item.id === evt.entryId || item.text === evt.entry);
-                    if (idx !== -1 && clan.players.length < clan.capacity) {
-                        const moved = clan.subs.splice(idx, 1)[0];
-                        clan.players.push(moved);
-                        changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `升为正选：${moved.text}`, operator: operatorLabel, token: actorToken });
-                    }
-                }
-            } else if (evt.op === 'EDIT_CLAN') {
-                const clan = clans[evt.clanIndex];
-                if (!clan) return;
-                Object.assign(clan, evt.data);
-                changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: clan.name, details: `管理员更新了部落信息`, operator: operatorLabel, token: actorToken });
-            } else if (evt.op === 'EDIT_TITLE') {
-                systemMeta.mainTitle = evt.mainTitle;
-                systemMeta.subTitle = evt.subTitle;
-                changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: '全局设置', details: `更新标题为「${evt.mainTitle}」`, operator: operatorLabel, token: actorToken });
-            } else if (evt.op === 'EDIT_RANKS') {
-                if (Array.isArray(evt.rankOptions)) {
-                    rankOptions = evt.rankOptions
-                        .filter(r => r && typeof r.value === 'string' && r.value.trim())
-                        .map(r => ({
-                            value: String(r.value).trim(),
-                            label: String(r.label || r.value).trim(),
-                            color: RANK_PALETTES[r.color] ? r.color : 'sky'
-                        }));
-                    changeLogs.unshift({ time: timeStr, type: 'EDIT', clan: '全局设置', details: `更新段位库（共 ${rankOptions.length} 个段位）`, operator: operatorLabel, token: actorToken });
-                }
-            } else if (evt.op === 'RESET_ALL') {
-                clans.forEach(c => { c.players = []; c.subs = []; });
-                changeLogs.unshift({ time: timeStr, type: 'REMOVE', clan: '全部部落', details: `管理员清空了所有报名名单`, operator: operatorLabel, token: actorToken });
-            }
-            if (changeLogs.length > 250) changeLogs.pop();
-        }
-
-        async function syncFromCloud(silent = false, force = false) {
-            if (!force && Date.now() - lastPushTimestamp < 3500) return;
-            if (isSyncing) return;
-            isSyncing = true;
-            if (!silent) updateSyncBadge('loading', '正在拉取最新名单...');
-
-            try {
-                const res = await fetch(NTFY_POLL_URL + `&_=${Date.now()}`, {
-                    method: 'GET',
-                    cache: 'no-store'
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-
-                const rawText = await res.text();
-                const lines = rawText.trim().split('\n').filter(Boolean);
-
-                systemMeta = JSON.parse(JSON.stringify(defaultMeta));
-                clans = JSON.parse(JSON.stringify(initialClans));
-                rankOptions = JSON.parse(JSON.stringify(defaultRankOptions));
-                changeLogs = [];
-                userBindingsMap = {};
-
-                lines.forEach(line => {
-                    try {
-                        const msgObj = JSON.parse(line);
-                        if (msgObj.event === 'message' && msgObj.message) {
-                            const payload = JSON.parse(msgObj.message);
-                            applyEventToState(payload, msgObj.time);
-                        }
-                    } catch (e) {}
-                });
-
-                rebuildActiveBindings();
-                try {
-                    localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({ clans, logs: changeLogs, meta: systemMeta, ranks: rankOptions }));
-                } catch(e) {}
-                updateSyncBadge('ok', '全群实时同步中 · ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}));
-            } catch (e) {
-                console.warn('同步异常:', e);
-                try {
-                    const cached = JSON.parse(localStorage.getItem(LOCAL_CACHE_KEY));
-                    if (cached) {
-                        clans = cached.clans;
-                        changeLogs = cached.logs || [];
-                        systemMeta = cached.meta || defaultMeta;
-                        if (Array.isArray(cached.ranks) && cached.ranks.length) rankOptions = cached.ranks;
-                    }
-                } catch (err) {}
-                updateSyncBadge('error', '网络波动，点击刷新重试');
-            } finally {
-                isSyncing = false;
-                renderSystemMeta();
-                renderClans();
-                renderManagerPanel();
-            }
-        }
-
-        async function pushEventToCloud(payload) {
-            updateSyncBadge('loading', '正在同步至全群...');
-            // 自动附带当前设备认证符号及管理员状态
-            payload.ownerToken = MY_USER_TOKEN;
-            payload.isAdminOp = isManager;
-
-            try {
-                const res = await fetch(NTFY_PUBLISH_URL, {
-                    method: 'POST',
-                    body: JSON.stringify(payload)
-                });
-                if (!res.ok) throw new Error('发布失败: ' + res.status);
-                
-                lastPushTimestamp = Date.now();
-                applyEventToState(payload, Math.floor(Date.now() / 1000));
-                rebuildActiveBindings();
-                try {
-                    localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({ clans, logs: changeLogs, meta: systemMeta, ranks: rankOptions }));
-                } catch(e) {}
-                
-                renderSystemMeta();
-                renderClans();
-                renderManagerPanel();
-                updateSyncBadge('ok', '已提交并实时同步 · ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}));
-                
-                setTimeout(() => syncFromCloud(true, true), 3800);
-                return true;
-            } catch (e) {
-                alert('网络推送失败，请检查网络连接后重试！');
-                updateSyncBadge('error', '推送失败');
-                return false;
-            }
-        }
-
-        function manualRefresh() { syncFromCloud(false, true); }
+        async function manualRefresh() { return fetchState(true); }
 
         function renderSystemMeta() {
             document.getElementById('system-main-title').textContent = systemMeta.mainTitle;
             document.getElementById('system-sub-title').textContent = systemMeta.subTitle;
             document.title = systemMeta.mainTitle;
-            document.getElementById('my-user-token-display').textContent = MY_USER_TOKEN;
+            document.getElementById('my-user-token-display').textContent = deviceToken || '获取中...';
             const editBtn = document.getElementById('edit-title-btn');
             if (editBtn) {
                 if (isManager) editBtn.classList.remove('hidden');
@@ -836,21 +595,32 @@
             setTimeout(() => document.getElementById('manager-pwd-input').focus(), 100);
         }
         function closeManagerLoginModal() { document.getElementById('manager-login-modal').classList.add('hidden'); }
-        function verifyManagerLogin() {
+        async function verifyManagerLogin() {
             const pwd = document.getElementById('manager-pwd-input').value;
-            if (pwd === 'XXXX') {
+            const btn = document.getElementById('manager-login-btn');
+            if (btn) { btn.disabled = true; btn.textContent = '验证中...'; }
+            try {
+                const data = await api('/api/admin/login', { method: 'POST', body: { password: pwd } });
+                adminToken = data.adminToken;
                 isManager = true;
-                try { localStorage.setItem('coc_cwl_is_manager_XXXX', 'true'); } catch(e) {}
+                try { localStorage.setItem(ADMIN_TOKEN_KEY, adminToken); } catch(e) {}
                 closeManagerLoginModal();
                 renderSystemMeta();
                 renderManagerPanel();
                 renderClans();
+                await fetchState(true);
                 alert('验证成功，已进入管理员模式！你现在可以查看所有人绑定的多号与全部修改记录。');
-            } else { alert('密码错误！'); }
+            } catch (e) {
+                alert(e.status === 429 ? '尝试次数过多，请稍后再试' : '密码错误！');
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = '登录'; }
+            }
         }
-        function logoutManager() {
+        async function logoutManager() {
+            try { await api('/api/admin/logout', { method: 'POST', auth: true }); } catch(e) {}
+            adminToken = '';
             isManager = false;
-            try { localStorage.removeItem('coc_cwl_is_manager_XXXX'); } catch(e) {}
+            try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch(e) {}
             renderSystemMeta();
             renderManagerPanel();
             renderClans();
@@ -869,17 +639,18 @@
             if (!isManager) return;
             const mainTitle = document.getElementById('input-main-title').value.trim();
             const subTitle = document.getElementById('input-sub-title').value.trim();
-            const ok = await pushEventToCloud({ op: 'EDIT_TITLE', mainTitle, subTitle, operator: '管理员' });
-            if (ok) {
+            try {
+                await api('/api/settings', { method: 'PUT', auth: true, body: { mainTitle, subTitle } });
                 closeEditTitleModal();
+                await fetchState(true);
                 alert('联赛标题已更新并同步至全群！');
-            }
+            } catch (e) { alert('保存失败：' + (e.data && e.data.error || e.message)); }
         }
 
         function openEditClanModal(index) {
             if (!isManager) return;
             const clan = clans[index];
-            document.getElementById('edit-clan-index').value = index;
+            document.getElementById('edit-clan-id').value = clan.id;
             document.getElementById('edit-clan-name').value = clan.name;
             document.getElementById('edit-clan-tag').value = clan.tag;
             document.getElementById('edit-clan-rank').value = clan.rank;
@@ -905,7 +676,7 @@
         async function saveClanInfo(e) {
             e.preventDefault();
             if (!isManager) return;
-            const clanIndex = parseInt(document.getElementById('edit-clan-index').value);
+            const clanId = document.getElementById('edit-clan-id').value;
             const data = {
                 name: document.getElementById('edit-clan-name').value.trim(),
                 tag: document.getElementById('edit-clan-tag').value.trim(),
@@ -915,11 +686,12 @@
                 time: document.getElementById('edit-clan-time').value.trim(),
                 requirement: document.getElementById('edit-clan-requirement').value.trim()
             };
-            const ok = await pushEventToCloud({ op: 'EDIT_CLAN', clanIndex, data, operator: '管理员' });
-            if (ok) {
+            try {
+                await api('/api/clans/' + encodeURIComponent(clanId), { method: 'PUT', auth: true, body: data });
                 closeEditClanModal();
+                await fetchState(true);
                 alert('部落信息已更新并同步至全群！');
-            }
+            } catch (e) { alert('保存失败：' + (e.data && e.data.error || e.message)); }
         }
 
         // ===== 段位遴选管理 =====
@@ -979,20 +751,22 @@
                 if (seen.has(r.value)) { alert(`段位「${r.value}」重复，请修改后再保存。`); return; }
                 seen.add(r.value);
             }
-            const ok = await pushEventToCloud({ op: 'EDIT_RANKS', rankOptions: list, operator: '管理员' });
-            if (ok) {
+            try {
+                await api('/api/ranks', { method: 'PUT', auth: true, body: { rankOptions: list } });
                 closeRankManageModal();
+                await fetchState(true);
                 alert('段位库已更新并同步至全群！');
-            }
+            } catch (e) { alert('保存失败：' + (e.data && e.data.error || e.message)); }
         }
 
         async function resetAllSignupsForNewMonth() {
             if (!isManager) return;
-            if (confirm('⚠️ 确定要清空【所有部落】的正选和替补报名名单吗？')) {
-                const ok = await pushEventToCloud({ op: 'RESET_ALL', operator: '管理员' });
-                if (ok) {
-                    alert('所有报名名单已清空并同步！');
-                }
+            if (confirm('⚠️ 确定要清空【所有部落】的正选和替补报名名单吗？（清空前会自动归档当期数据）')) {
+                try {
+                    const res = await api('/api/reset', { method: 'POST', auth: true, body: {} });
+                    await fetchState(true);
+                    alert(res.archived ? '所有报名名单已清空，当期数据已归档！' : '当前无报名数据，无需清空。');
+                } catch (e) { alert('操作失败：' + (e.data && e.data.error || e.message)); }
             }
         }
 
@@ -1015,13 +789,20 @@
             }
         }
 
-        function openHistoryModal() {
+        async function openHistoryModal() {
             if (!isManager) return;
-            rebuildActiveBindings();
-            
+            document.getElementById('history-modal').classList.remove('hidden');
+            switchAuditTab('bindings');
+
+            // 拉取审计日志（同时用于展示与补充历史曾用名）
+            try {
+                const data = await api('/api/logs', { auth: true });
+                logsData = Array.isArray(data.logs) ? data.logs : [];
+            } catch (e) { logsData = []; }
+
             // 1. 渲染多号绑定总览
             const bindingsContainer = document.getElementById('audit-bindings-view');
-            const users = Object.values(userBindingsMap);
+            const users = computeBindings();
             if (users.length === 0) {
                 bindingsContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60">暂无群友认证绑定数据</div>`;
             } else {
@@ -1050,10 +831,10 @@
 
             // 2. 渲染详细审计流水日志
             const logsContainer = document.getElementById('audit-logs-view');
-            if (changeLogs.length === 0) {
+            if (logsData.length === 0) {
                 logsContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60">暂无修改日志</div>`;
             } else {
-                logsContainer.innerHTML = changeLogs.map(log => {
+                logsContainer.innerHTML = logsData.map(log => {
                     let badgeClass = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
                     let badgeText = '添加报名';
                     if (log.type === 'REMOVE') { badgeClass = 'bg-rose-500/20 text-rose-300 border-rose-500/40'; badgeText = '移除/退赛'; }
@@ -1061,7 +842,7 @@
                     return `
                         <div class="bg-slate-800/90 border border-slate-700/80 rounded-xl p-3 text-xs space-y-1">
                             <div class="flex justify-between items-center text-slate-400">
-                                <span class="font-mono text-amber-400"><i class="fa-regular fa-clock mr-1"></i>${log.time}</span>
+                                <span class="font-mono text-amber-400"><i class="fa-regular fa-clock mr-1"></i>${escapeHtml(log.time)}</span>
                                 <span class="px-2 py-0.5 rounded text-[10px] font-semibold border ${badgeClass}">${badgeText}</span>
                             </div>
                             <div class="text-slate-200 font-medium">部落：<span class="text-amber-300">${escapeHtml(log.clan)}</span> | 详情：${escapeHtml(log.details)}</div>
@@ -1073,8 +854,6 @@
                     `;
                 }).join('');
             }
-            switchAuditTab('bindings');
-            document.getElementById('history-modal').classList.remove('hidden');
         }
         function closeHistoryModal() { document.getElementById('history-modal').classList.add('hidden'); }
 
@@ -1116,7 +895,7 @@
 
                 const playersHtml = clan.players.length > 0
                     ? clan.players.map((pObj, pIdx) => {
-                        const isMine = pObj.ownerToken === MY_USER_TOKEN;
+                        const isMine = pObj.ownerToken === deviceToken;
                         const canEdit = isMine || isManager;
                         return `
                             <div class="flex items-center justify-between ${isMine ? 'bg-amber-950/40 border-amber-500/50' : 'bg-slate-900/80 border-slate-700/60'} border px-3 py-1.5 rounded-lg text-xs">
@@ -1144,7 +923,7 @@
 
                 const subsHtml = subsList.length > 0
                     ? subsList.map((sObj, sIdx) => {
-                        const isMine = sObj.ownerToken === MY_USER_TOKEN;
+                        const isMine = sObj.ownerToken === deviceToken;
                         const canEdit = isMine || isManager;
                         return `
                             <div class="flex items-center justify-between ${isMine ? 'bg-sky-950/60 border-sky-400/60' : 'bg-sky-950/40 border-sky-700/40'} border px-3 py-1.5 rounded-lg text-xs">
@@ -1279,9 +1058,10 @@
             e.preventDefault();
             const btn = document.getElementById('submit-signup-btn');
             btn.disabled = true;
-            btn.textContent = '同步绑定中...';
+            btn.textContent = '提交中...';
 
             try {
+                await ensureDeviceToken();
                 const clanIndex = parseInt(document.getElementById('modal-clan-index').value);
                 const name = document.getElementById('player-name').value.trim();
                 const th = document.getElementById('player-th').value;
@@ -1291,29 +1071,14 @@
                 const entry = th ? `${name} ${th}` : name;
                 const clan = clans[clanIndex];
 
-                if (role === 'main' && clan.players.length >= clan.capacity) {
-                    alert('该部落正选已满，请切换为替补！');
-                    return;
-                }
-
-                const entryId = `entry_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
-                const ok = await pushEventToCloud({ 
-                    op: 'SIGNUP', 
-                    clanIndex, 
-                    role, 
-                    entry, 
-                    entryId,
-                    operator: name 
-                });
-                if (ok) {
-                    const targetList = role === 'sub' ? (clans[clanIndex].subs || []) : clans[clanIndex].players;
-                    const added = targetList.some(item => item.id === entryId);
-                    if (added) {
-                        closeModal();
-                        alert(`报名成功！「${entry}」已绑定至你的认证符号（${MY_USER_TOKEN}），仅你本人可修改。`);
-                    } else {
-                        alert('该部落正选名额已满，报名未生效，请切换为「替补席位」后重试。');
-                    }
+                try {
+                    await api('/api/signup', { method: 'POST', device: true, body: { clanId: clan.id, role, th, name } });
+                    closeModal();
+                    await fetchState(true);
+                    alert(`报名成功！「${entry}」已绑定至你的认证符号（${deviceToken}），仅你本人可修改。`);
+                } catch (err) {
+                    if (err.status === 409) alert('该部落正选名额已满，请切换为「替补席位」后重试。');
+                    else alert('报名失败：' + (err.data && err.data.error || err.message));
                 }
             } finally {
                 btn.disabled = false;
@@ -1327,8 +1092,8 @@
             const targetObj = list.find(item => item.id === entryId);
             if (!targetObj) return;
 
-            // 严格鉴权：非管理员且非本人绑定账号直接拦截
-            if (!isManager && targetObj.ownerToken !== MY_USER_TOKEN) {
+            // 严格鉴权：非管理员、非本人绑定账号、且非可认领的预设历史名单 -> 拦截
+            if (!isManager && targetObj.ownerToken !== deviceToken && targetObj.ownerToken !== '#SYS_PRESET') {
                 alert('⚠️ 权限拒绝：该报名账号未绑定你的认证符号，你只能修改自己报名的账号！');
                 return;
             }
@@ -1339,10 +1104,12 @@
             document.getElementById('edit-my-role').value = role;
 
             const badgeBox = document.getElementById('edit-owner-badge-box');
-            if (isManager && targetObj.ownerToken !== MY_USER_TOKEN) {
+            if (isManager && targetObj.ownerToken !== deviceToken) {
                 badgeBox.innerHTML = `<i class="fa-solid fa-user-shield mr-1"></i> 管理员越权维护：正在修改归属于 <strong>${escapeHtml(targetObj.ownerToken)}</strong> 的报名`;
+            } else if (targetObj.ownerToken === '#SYS_PRESET') {
+                badgeBox.innerHTML = `<i class="fa-solid fa-hand-sparkles mr-1"></i> 该账号为历史预设名单，保存后将认领至你的认证符号（${deviceToken}）`;
             } else {
-                badgeBox.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> 认证通过（${MY_USER_TOKEN}）：正在修改你绑定的报名账号`;
+                badgeBox.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> 认证通过（${deviceToken}）：正在修改你绑定的报名账号`;
             }
             
             let parts = targetObj.text.split(' ');
@@ -1364,28 +1131,21 @@
             btn.disabled = true;
             btn.textContent = '保存中...';
             try {
-                const clanIndex = parseInt(document.getElementById('edit-my-clan-index').value);
+                await ensureDeviceToken();
                 const entryId = document.getElementById('edit-my-entry-id').value;
-                const oldEntry = document.getElementById('edit-my-old-entry').value;
-                const role = document.getElementById('edit-my-role').value;
                 const newName = document.getElementById('edit-my-player-name').value.trim();
                 const newTh = document.getElementById('edit-my-player-th').value;
                 if (!newName) return;
 
-                const newEntry = newTh ? `${newName} ${newTh}` : newName;
-
-                const ok = await pushEventToCloud({ 
-                    op: 'UPDATE_ENTRY', 
-                    clanIndex, 
-                    role, 
-                    entryId,
-                    oldEntry, 
-                    newEntry, 
-                    operator: newName 
-                });
-                if (ok) {
+                try {
+                    await api('/api/entries/' + encodeURIComponent(entryId), {
+                        method: 'PATCH', device: true, auth: isManager, body: { name: newName, th: newTh }
+                    });
                     closeEditMySignupModal();
+                    await fetchState(true);
                     alert('修改成功，已实时同步至全群！');
+                } catch (err) {
+                    alert('修改失败：' + (err.data && err.data.error || err.message));
                 }
             } finally {
                 btn.disabled = false;
@@ -1394,26 +1154,21 @@
         }
 
         async function handleDeleteMySignup() {
-            const clanIndex = parseInt(document.getElementById('edit-my-clan-index').value);
             const entryId = document.getElementById('edit-my-entry-id').value;
             const oldEntry = document.getElementById('edit-my-old-entry').value;
-            const role = document.getElementById('edit-my-role').value;
 
             if (confirm(`确定要退赛/取消报名「${oldEntry}」吗？`)) {
                 const btn = document.getElementById('delete-edit-btn');
                 btn.disabled = true;
                 try {
-                    const ok = await pushEventToCloud({ 
-                        op: 'REMOVE', 
-                        clanIndex, 
-                        role, 
-                        entryId,
-                        entry: oldEntry, 
-                        operator: oldEntry.split(' ')[0] 
-                    });
-                    if (ok) {
+                    await ensureDeviceToken();
+                    try {
+                        await api('/api/entries/' + encodeURIComponent(entryId), { method: 'DELETE', device: true, auth: isManager });
                         closeEditMySignupModal();
+                        await fetchState(true);
                         alert('已成功取消报名！');
+                    } catch (err) {
+                        alert('取消失败：' + (err.data && err.data.error || err.message));
                     }
                 } finally {
                     btn.disabled = false;
@@ -1423,16 +1178,12 @@
 
         async function movePlayerRole(clanIndex, entryId, direction) {
             if (!isManager) return;
-            const clan = clans[clanIndex];
-            const list = direction === 'toSub' ? clan.players : clan.subs;
-            const targetObj = list.find(item => item.id === entryId);
-            if (!targetObj) return;
-
-            if (direction === 'toMain' && clan.players.length >= clan.capacity) {
-                alert('正选已满，无法升为正选！');
-                return;
+            try {
+                await api('/api/entries/' + encodeURIComponent(entryId) + '/move', { method: 'POST', auth: true, body: { direction } });
+                await fetchState(true);
+            } catch (err) {
+                alert('操作失败：' + (err.data && err.data.error || err.message));
             }
-            await pushEventToCloud({ op: 'MOVE', clanIndex, direction, entryId, entry: targetObj.text, operator: '管理员' });
         }
 
         async function removePlayer(clanIndex, entryId, role) {
@@ -1443,7 +1194,12 @@
             if (!targetObj) return;
 
             if (confirm(`确定要管理员强制移除「${targetObj.text}」吗？`)) {
-                await pushEventToCloud({ op: 'REMOVE', clanIndex, role, entryId, entry: targetObj.text, operator: '管理员' });
+                try {
+                    await api('/api/entries/' + encodeURIComponent(entryId), { method: 'DELETE', auth: true, device: true });
+                    await fetchState(true);
+                } catch (err) {
+                    alert('操作失败：' + (err.data && err.data.error || err.message));
+                }
             }
         }
 
@@ -1498,12 +1254,20 @@
             renderSystemMeta();
             renderManagerPanel();
             renderClans();
-            await syncFromCloud(false, true);
 
+            // 1. 申请/读取设备令牌（服务端签发，报名归属依据）
+            try { await ensureDeviceToken(); }
+            catch (e) { console.warn('设备令牌获取失败:', e); }
+
+            // 2. 校验已保存的管理端会话
+            isManager = await checkAdminSession();
+
+            // 3. 拉取权威状态
+            await fetchState(false);
+
+            // 4. 轮询最新版本（仅页面可见时）
             setInterval(() => {
-                if (document.visibilityState === 'visible') {
-                    syncFromCloud(true, false);
-                }
+                if (document.visibilityState === 'visible') fetchState(false);
             }, 10000);
         };
     </script>
