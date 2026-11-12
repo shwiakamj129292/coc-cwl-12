@@ -7,5 +7,12 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "run_worker_first": true
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "coc-cwl-signup",
+      "database_id": "12ede25a-30ff-45d6-8c62-80f2958aec07"
+    }
+  ]
 }
