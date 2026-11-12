@@ -1,8 +1,10 @@
 node_modules/
+.wrangler/
 npm-debug.log*
 *.log
 .DS_Store
 .env
+dist/
 data/*.db
 data/*.db-wal
 data/*.db-shm

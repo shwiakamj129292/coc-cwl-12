@@ -1,22 +1,22 @@
-# COC CWL Signup
+# COC CWL 报名系统
 
-报名系统由 Node.js 后端和 SQLite 数据库组成。GitHub Pages 只能托管静态文件，不能运行报名 API 或写入数据库；请使用支持 Node.js 和持久化磁盘的服务托管。
+使用 Cloudflare Pages + Pages Functions + D1。页面和报名 API 共用一个 `pages.dev` 链接；D1 在服务端持久保存报名数据，不需要付费持久磁盘。
 
-## 在 Render 部署
+## 免费部署
 
-1. 在 Render 选择 **New +** -> **Blueprint**，连接本 GitHub 仓库并选择 `main` 分支。
-2. Render 读取仓库根目录的 `render.yaml`，创建 Node Web Service 和 `/data` 持久化磁盘。
-3. 按提示设置 `ADMIN_PASSWORD` 为强密码，然后部署。
-4. 打开 Render 提供的 `https://...onrender.com` 服务网址。请使用这个网址报名，不要使用 GitHub 仓库源码页或 GitHub Pages 链接。
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，进入 **Workers & Pages → D1 SQL Database**，新建数据库 `coc-cwl-signup`。
+2. 打开新数据库的 **Console**，将 [初始化 SQL](migrations/0001_init.sql) 全部内容粘贴并执行一次。它会导入 7 个部落和 44 条旧报名。
+3. 在 Cloudflare 选择 **Workers & Pages → Create application → Pages → Connect to Git**，连接本仓库的 `main` 分支。Framework preset 选 `None`，Build command 填 `npm run build`，Build output directory 填 `dist`。
+4. 在 Pages 项目的 **Settings → Functions → D1 database bindings** 添加绑定：Variable name 填 `DB`，数据库选 `coc-cwl-signup`。
+5. 在 Pages 项目的 **Settings → Variables and Secrets** 添加 Secret `ADMIN_PASSWORD`，设置强管理员密码，然后重新部署。
+6. 部署成功后，打开 Cloudflare 提供的 `https://<项目名>.pages.dev`。这个就是分享给群友的报名链接。
 
-Render 上的持久化磁盘需要付费服务计划。不要删除或重新创建磁盘，否则其中的报名数据库会丢失。
+不要重复执行初始化 SQL，否则会因主键重复而报错。
 
-## 本地运行
+Cloudflare 免费 D1 单库上限为 500 MB，足够当前名单规模；免费计划也有请求额度，超额后需要等待额度重置或升级。详见 [D1 官方限制](https://developers.cloudflare.com/d1/platform/limits/)。
 
-需要 Node.js 22.5 或更高版本。
+## 重要
 
-```sh
-ADMIN_PASSWORD='replace-with-a-strong-password' npm start
-```
-
-浏览器打开 `http://localhost:3000`。本地数据库默认路径为 `data/app.db`；部署时请把 `DB_FILE` 指向可写的持久化磁盘。
+- GitHub 仓库页和 GitHub Pages 不是报名链接；必须使用 Cloudflare Pages 部署后生成的 `pages.dev` 地址。
+- Cloudflare 账号需要授权 GitHub 仓库，并由你创建 D1 数据库、设置管理员密码；这些账号凭证不能由代码代替。
+- 不要把管理员密码写入仓库或公开发给群友。
