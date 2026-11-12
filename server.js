@@ -463,6 +463,12 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 404, { error: 'not found' });
   } catch (e) {
     console.error('请求处理异常:', e);
+    if (/SQLITE_READONLY|readonly database|attempt to write a readonly database/i.test(e.message || '')) {
+      return sendJson(res, 503, {
+        error: '报名数据库当前不可写。请将 DB_FILE 设置为可写的持久化磁盘路径（例如 /data/app.db）后重启服务。',
+        code: 'DB_READ_ONLY'
+      });
+    }
     return sendJson(res, 500, { error: e.message || '服务器内部错误' });
   }
 });
