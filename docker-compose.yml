@@ -1,0 +1,20 @@
+services:
+  coc-cwl:
+    build: .
+    image: coc-cwl:latest
+    container_name: coc-cwl
+    restart: unless-stopped
+    ports:
+      # 宿主机 8000 -> 容器 3000，可按需修改左侧端口
+      - "8000:3000"
+    environment:
+      # 首次部署务必修改为强密码！也可用 .env 文件注入
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-0921}"
+      PORT: "3000"
+      DB_FILE: "/data/app.db"
+    volumes:
+      # 数据持久化：容器重建/升级不会丢失报名数据
+      - coc-data:/data
+
+volumes:
+  coc-data:
