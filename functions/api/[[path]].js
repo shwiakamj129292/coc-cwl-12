@@ -1,6 +1,7 @@
 const ADMIN_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 5 * 60 * 1000;
 const PASSWORD_HASH_ITERATIONS = 210000;
+const DEFAULT_ADMIN_PASSWORD = "0921";
 const MAX_BODY = 64 * 1024;
 const ALLOWED_TH = new Set(["", "19本", "18本", "17本", "16本", "15本及以下"]);
 const VALID_COLORS = new Set([
@@ -185,6 +186,17 @@ async function adminPasswordConfigured(db, env) {
   return !!(await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'"));
 }
 
+// Resolve the currently effective admin password in priority order:
+//   env.ADMIN_PASSWORD (Secret) > DB adminPasswordHash > built-in DEFAULT.
+// The default always works so a fresh deployment is never locked out.
+async function verifyCurrentAdminPassword(db, env, candidate) {
+  const configuredPassword = typeof env.ADMIN_PASSWORD === "string" ? env.ADMIN_PASSWORD : "";
+  if (configuredPassword) return passwordMatches(candidate, configuredPassword);
+  const storedHash = await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'");
+  if (storedHash) return verifyAdminPassword(candidate, storedHash.value);
+  return passwordMatches(candidate, DEFAULT_ADMIN_PASSWORD);
+}
+
 function setupTokenRequired(db, env) {
   const envSetupToken = typeof env.ADMIN_SETUP_TOKEN === "string" ? env.ADMIN_SETUP_TOKEN : "";
   return { envSetupToken, required: !!envSetupToken };
@@ -338,19 +350,9 @@ async function login(request, env) {
   }
 
   const body = await readJson(request);
-  const storedHash = await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'");
-  // An explicitly configured ADMIN_PASSWORD (env/secret) always takes priority
-  // over the stored hash, so rotating the secret is never shadowed by a stale one.
-  const configuredPassword = typeof env.ADMIN_PASSWORD === "string" ? env.ADMIN_PASSWORD : "";
-  if (!configuredPassword && !storedHash) {
-    return json({ error: "管理员密码未配置" }, 503);
-  }
   const candidate = String(body.password || "");
   if (candidate.length > 128) return json({ error: "密码错误" }, 401);
-  const valid = configuredPassword
-    ? passwordMatches(candidate, configuredPassword)
-    : await verifyAdminPassword(candidate, storedHash.value);
-  if (!valid) {
+  if (!(await verifyCurrentAdminPassword(db, env, candidate))) {
     return json({ error: "密码错误" }, 401);
   }
   const token = randomHex(24);
@@ -358,6 +360,32 @@ async function login(request, env) {
   await stmt(db, "INSERT INTO sessions(token, created_at, expires_at) VALUES(?, ?, ?)")
     .bind(token, now, expiresAt).run();
   return json({ adminToken: token, expiresAt });
+}
+
+async function changeAdminPassword(request, env) {
+  const db = env.DB;
+  const token = await adminToken(request, db);
+  if (!token) return json({ error: "需要管理员权限" }, 403);
+
+  const body = await readJson(request);
+  const oldPassword = String(body.oldPassword || "");
+  const newPassword = String(body.newPassword || "");
+  if (newPassword.length < 12 || newPassword.length > 128) {
+    return json({ error: "新密码需为 12 至 128 个字符" }, 400);
+  }
+  if (newPassword === DEFAULT_ADMIN_PASSWORD) {
+    return json({ error: "新密码不能使用系统默认密码" }, 400);
+  }
+  if (!(await verifyCurrentAdminPassword(db, env, oldPassword))) {
+    return json({ error: "当前密码不正确" }, 401);
+  }
+
+  const encoded = await hashAdminPassword(newPassword);
+  await stmt(db, "INSERT INTO settings(key, value) VALUES('adminPasswordHash', ?) " +
+    "ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(encoded).run();
+  // Force other sessions to re-login with the new password.
+  await stmt(db, "DELETE FROM sessions WHERE token <> ?").bind(token).run();
+  return json({ ok: true });
 }
 
 async function handle(request, env) {
@@ -405,6 +433,11 @@ async function handle(request, env) {
     const token = await adminToken(request, db);
     if (token) await stmt(db, "DELETE FROM sessions WHERE token = ?").bind(token).run();
     return json({ ok: true });
+  }
+
+  if (path === "/api/admin/password") {
+    if (method !== "PUT") return json({ error: "method" }, 405);
+    return changeAdminPassword(request, env);
   }
 
   if (path === "/api/state") {

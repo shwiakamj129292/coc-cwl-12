@@ -357,3 +357,79 @@ test("ADMIN_PASSWORD takes priority over a stale stored password hash", async ()
   });
   assert.equal(response.status, 401);
 });
+
+test("default admin password 0921 works when nothing is configured", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1() };
+
+  let response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.60" },
+    body: JSON.stringify({ password: "0921" })
+  });
+  assert.equal(response.status, 200);
+  assert.ok((await readJson(response)).adminToken);
+
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.60" },
+    body: JSON.stringify({ password: "wrong-password" })
+  });
+  assert.equal(response.status, 401);
+});
+
+test("admin can change the password via PUT /api/admin/password", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1() };
+  const newPassword = "my-new-strong-password-2026";
+
+  // Login with the default password first.
+  let response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.70" },
+    body: JSON.stringify({ password: "0921" })
+  });
+  assert.equal(response.status, 200);
+  const { adminToken } = await readJson(response);
+  const adminHeaders = { authorization: `Bearer ${adminToken}`, "content-type": "application/json" };
+
+  // Wrong old password must be rejected.
+  response = await runApi(onRequest, env, "/api/admin/password", {
+    method: "PUT",
+    headers: adminHeaders,
+    body: JSON.stringify({ oldPassword: "wrong", newPassword })
+  });
+  assert.equal(response.status, 401);
+
+  // New password too short must be rejected.
+  response = await runApi(onRequest, env, "/api/admin/password", {
+    method: "PUT",
+    headers: adminHeaders,
+    body: JSON.stringify({ oldPassword: "0921", newPassword: "short" })
+  });
+  assert.equal(response.status, 400);
+
+  // Successful change.
+  response = await runApi(onRequest, env, "/api/admin/password", {
+    method: "PUT",
+    headers: adminHeaders,
+    body: JSON.stringify({ oldPassword: "0921", newPassword })
+  });
+  assert.equal(response.status, 200);
+
+  // Old default password no longer works.
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.70" },
+    body: JSON.stringify({ password: "0921" })
+  });
+  assert.equal(response.status, 401);
+
+  // New password works.
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.70" },
+    body: JSON.stringify({ password: newPassword })
+  });
+  assert.equal(response.status, 200);
+});
