@@ -1210,11 +1210,10 @@
                         const canEdit = isMine || isManager;
                         return `
                             <div class="flex items-center justify-between ${isMine ? 'bg-amber-950/40 border-amber-500/50' : 'bg-slate-900/80 border-slate-700/60'} border px-3 py-1.5 rounded-lg text-xs">
-                                <span ${canEdit ? `onclick="openEditMySignupModal(${index}, '${escapeQuotes(pObj.id)}', 'main')"` : ''} class="${canEdit ? 'cursor-pointer hover:text-amber-300' : ''} ${isMine ? 'text-amber-300 font-bold' : 'text-slate-200'} flex items-center gap-1.5 truncate flex-1">
+                                <span ${canEdit ? `onclick="openEditMySignupModal(${index}, '${escapeQuotes(pObj.id)}', 'main')"` : ''} class="${canEdit ? 'cursor-pointer hover:text-amber-300' : ''} ${isMine ? 'text-amber-300 font-bold' : 'text-slate-200'} flex min-w-0 items-center gap-1.5 flex-1">
                                     <span class="text-amber-400 font-mono">${pIdx + 1}.</span>
-                                    <span class="truncate">${escapeHtml(pObj.text)}</span>
+                                    <span class="min-w-0 flex-1 truncate">${escapeHtml(pObj.text)}</span>
                                     ${isMine ? '<span class="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.2 rounded border border-amber-500/30 shrink-0">我</span>' : ''}
-                                    ${(isManager && pObj.ownerToken && pObj.ownerToken !== '#SYS_PRESET') ? `<span class="text-[9px] font-mono text-emerald-400 bg-emerald-950/80 px-1 rounded border border-emerald-500/30 shrink-0">${escapeHtml(pObj.ownerToken)}</span>` : ''}
                                 </span>
                                 <div class="flex items-center gap-1.5 ml-2 shrink-0">
                                     ${canEdit ? `
@@ -1238,11 +1237,10 @@
                         const canEdit = isMine || isManager;
                         return `
                             <div class="flex items-center justify-between ${isMine ? 'bg-sky-950/60 border-sky-400/60' : 'bg-sky-950/40 border-sky-700/40'} border px-3 py-1.5 rounded-lg text-xs">
-                                <span ${canEdit ? `onclick="openEditMySignupModal(${index}, '${escapeQuotes(sObj.id)}', 'sub')"` : ''} class="${canEdit ? 'cursor-pointer hover:text-sky-200' : ''} ${isMine ? 'text-sky-200 font-bold' : 'text-sky-300'} flex items-center gap-1.5 truncate flex-1">
+                                <span ${canEdit ? `onclick="openEditMySignupModal(${index}, '${escapeQuotes(sObj.id)}', 'sub')"` : ''} class="${canEdit ? 'cursor-pointer hover:text-sky-200' : ''} ${isMine ? 'text-sky-200 font-bold' : 'text-sky-300'} flex min-w-0 items-center gap-1.5 flex-1">
                                     <span class="text-sky-400 font-mono">替${sIdx + 1}.</span>
-                                    <span class="truncate">${escapeHtml(sObj.text)}</span>
+                                    <span class="min-w-0 flex-1 truncate">${escapeHtml(sObj.text)}</span>
                                     ${isMine ? '<span class="text-[10px] bg-sky-500/20 text-sky-200 px-1.5 py-0.2 rounded border border-sky-500/30 shrink-0">我</span>' : ''}
-                                    ${(isManager && sObj.ownerToken && sObj.ownerToken !== '#SYS_PRESET') ? `<span class="text-[9px] font-mono text-emerald-400 bg-emerald-950/80 px-1 rounded border border-emerald-500/30 shrink-0">${escapeHtml(sObj.ownerToken)}</span>` : ''}
                                 </span>
                                 <div class="flex items-center gap-1.5 ml-2 shrink-0">
                                     ${canEdit ? `
