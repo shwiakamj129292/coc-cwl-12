@@ -823,34 +823,6 @@ async function handle(request, env) {
     return changeAdminPassword(request, env);
   }
 
-  // 管理员诊断接口：返回所有报名的原始归属信息，用于排查"绑定数据丢失"问题
-  if (path === "/api/admin/diagnose") {
-    if (method !== "GET") return json({ error: "method" }, 405);
-    const token = await adminToken(request, db);
-    if (!token) return json({ error: "需要管理员权限" }, 403);
-    const entries = await all(db, `
-      SELECT e.id, e.clan_id, c.name AS clan_name, e.role, e.name, e.owner_token, e.created_at
-      FROM entries e LEFT JOIN clans c ON e.clan_id = c.id
-      ORDER BY e.created_at ASC
-    `);
-    const presetCount = entries.filter(e => e.owner_token === "#SYS_PRESET").length;
-    const realCount = entries.filter(e => e.owner_token && e.owner_token !== "#SYS_PRESET").length;
-    const unknownCount = entries.filter(e => !e.owner_token).length;
-    const uniqueTokens = new Set(entries.map(e => e.owner_token).filter(t => t && t !== "#SYS_PRESET"));
-    return json({
-      total: entries.length,
-      preset: presetCount,
-      real: realCount,
-      unknown: unknownCount,
-      uniqueUsers: uniqueTokens.size,
-      entries: entries.map(e => ({
-        id: e.id, clan: e.clan_name || e.clan_id, role: e.role,
-        name: e.name, ownerToken: e.owner_token || null,
-        createdAt: formatDateTime(e.created_at)
-      }))
-    });
-  }
-
   // 管理员「存储容量」面板：查看实时用量、服务器额度、告警与上次清理结果。
   if (path === "/api/admin/storage") {
     const token = await adminToken(request, db);

@@ -95,13 +95,13 @@ const wrap = (names) => names.map((name, idx) => ({
 }));
 
 const SEED_CLANS = [
-  { id: 'xiyang', name: '夕阳之秋 (晋级组)', tag: '#2PRCUGGJJ', rank: '泰坦3', category: '泰坦3', capacity: 15, time: '12月1号（下午4点）', requirement: '至少传奇2段位(至少一个号）；考核：传奇1模式 3进2（传奇1段位无需考核）', players: wrap(['永恒星河✨洛', '神话再现✨洛', '黎明之夏✨洛', '春暖花开✨洛', '终为向日✨洛', '荧光之夜✨洛', '大千世界✨洛', '幽冥鬼域✨洛', '雨后春笋✨洛', '夜林之溪✨洛', '闪电龙骑士', 'Allenyip', 'Ace 19本']) },
-  { id: 'shikong', name: '时空之旅 (晋级组)', tag: '#2J002JY80', rank: '冠军3', category: '冠军3', capacity: 15, time: '12月1号（下午4点）', requirement: '至少传奇3段位（至少一个号）；考核：传奇3模式 4进3（传奇2及以上无需考核）', players: wrap(['皇家禁卫军 19本', '皇家守护者 19本', 'womeiyouwen 19本', 'karina 19本', 'karina 18本', '微笑走过 19本', 'CN.one微笑走过 19本', '｛+｝alex｛+｝ 18本', '小橙子']) },
-  { id: 'piaoxue', name: '飘雪城', tag: '#2CRVVYQPJ', rank: '冠军3', category: '冠军3', capacity: 15, time: '12月1号（下午4点后）', requirement: '19本、（18本最多5个）有打19本3星实力；上次大师1/冠3/泰坦3有18星以上可直接报名，其他找梦幻巧克力审核', players: wrap(['凛冬 19本', '林村 19本', '梦幻巧克力 19本', '寒冰 19本', '15 18本', 'siang 18本', 'tan 18本']) },
-  { id: 'xuejingling', name: '雪精灵', tag: '#2GPUCRVR2', rank: '大师2', category: '大师', capacity: 30, time: '12月1号（下午4点后）', requirement: '19本、18本、（17本最多5个）；7次次数必须用完，不可漏刀', players: wrap(['畲族部落 18本', 'WAYNE 17本', 'Dreamland_xiang 17本', '梦夜星空 18本', '我的家 18本']) },
-  { id: 'huoyan', name: '火焰部落！', tag: '#Y8UR2GYP', rank: '大师3', category: '大师', capacity: 30, time: '12月1号（下午4点后）', requirement: '19本、18本、17本；7次次数必须用完，不可漏刀', players: wrap(['Peace & Love 17本']) },
-  { id: 'siyue', name: '四月是你的谎言 (保级组)', tag: '#2JLLVYUVJ', rank: '水晶2', category: '水晶2', capacity: 30, time: '12月1号（下午4点）', requirement: '无大本营等级限制，积极进攻就行', players: wrap(['Li 17本', 'ℒℴѵℯ信·仔 17本', '王子 17本', 'Maple 16本', 'Kirito 16本', 'Taссаа 15本及以下', 'Bryan_Lzy 17本', '传奇小子3号']) },
-  { id: 'bingjingling', name: '冰精灵', tag: '#2QJPQ88LJ', rank: '水晶2', category: '水晶2', capacity: 30, time: '12月1号（下午4点后）', requirement: '1到19本都可参加', players: wrap(['皇家隐秘者 14本']) }
+  { id: 'xiyang', name: '示例部落 A (晋级组)', tag: '#AAAAAAA1', rank: '泰坦3', category: '泰坦3', capacity: 15, time: '比赛日（下午4点）', requirement: '示例要求：请在此填写你部落的段位与考核说明', players: wrap(['示例玩家 A1', '示例玩家 A2', '示例玩家 A3', '示例玩家 A4', '示例玩家 A5', '示例玩家 A6', '示例玩家 A7', '示例玩家 A8', '示例玩家 A9', '示例玩家 A10', '示例玩家 A11', '示例玩家 A12', '示例玩家 A13']) },
+  { id: 'shikong', name: '示例部落 B (晋级组)', tag: '#AAAAAAA2', rank: '冠军3', category: '冠军3', capacity: 15, time: '比赛日（下午4点）', requirement: '示例要求：请在此填写你部落的段位与考核说明', players: wrap(['示例玩家 B1', '示例玩家 B2', '示例玩家 B3', '示例玩家 B4', '示例玩家 B5', '示例玩家 B6', '示例玩家 B7', '示例玩家 B8', '示例玩家 B9']) },
+  { id: 'piaoxue', name: '示例部落 C', tag: '#AAAAAAA3', rank: '冠军3', category: '冠军3', capacity: 15, time: '比赛日（下午4点后）', requirement: '示例要求：请在此填写你部落的段位与考核说明', players: wrap(['示例玩家 C1', '示例玩家 C2', '示例玩家 C3', '示例玩家 C4', '示例玩家 C5', '示例玩家 C6', '示例玩家 C7']) },
+  { id: 'xuejingling', name: '示例部落 D', tag: '#AAAAAAA4', rank: '大师2', category: '大师', capacity: 30, time: '比赛日（下午4点后）', requirement: '示例要求：请在此填写你部落的段位与考核说明', players: wrap(['示例玩家 D1', '示例玩家 D2', '示例玩家 D3', '示例玩家 D4', '示例玩家 D5']) },
+  { id: 'huoyan', name: '示例部落 E', tag: '#AAAAAAA5', rank: '大师3', category: '大师', capacity: 30, time: '比赛日（下午4点后）', requirement: '示例要求：请在此填写你部落的段位与考核说明', players: wrap(['示例玩家 E1']) },
+  { id: 'siyue', name: '示例部落 F (保级组)', tag: '#AAAAAAA6', rank: '水晶2', category: '水晶2', capacity: 30, time: '比赛日（下午4点）', requirement: '示例要求：请在此填写你部落的段位与考核说明', players: wrap(['示例玩家 F1', '示例玩家 F2', '示例玩家 F3', '示例玩家 F4', '示例玩家 F5', '示例玩家 F6', '示例玩家 F7', '示例玩家 F8']) },
+  { id: 'bingjingling', name: '示例部落 G', tag: '#AAAAAAA7', rank: '水晶2', category: '水晶2', capacity: 30, time: '比赛日（下午4点后）', requirement: '示例要求：请在此填写你部落的段位与考核说明', players: wrap(['示例玩家 G1']) }
 ];
 
 // ---------------------------------------------------------------------------
@@ -559,7 +559,7 @@ const server = http.createServer(async (req, res) => {
         code: 'DB_READ_ONLY'
       });
     }
-    return sendJson(res, 500, { error: e.message || '服务器内部错误' });
+    return sendJson(res, 500, { error: '服务器内部错误' });
   }
 });
 

@@ -5,6 +5,7 @@ npm-debug.log*
 .DS_Store
 .env
 dist/
+.trae-html-share-packages/
 data/*.db
 data/*.db-wal
 data/*.db-shm

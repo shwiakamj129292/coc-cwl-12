@@ -196,12 +196,12 @@ test("Pages API seeds data, enforces ownership and capacity, and archives reset"
     method: "PUT",
     headers: { ...adminHeaders, "content-type": "application/json" },
     body: JSON.stringify({
-      name: "冰精灵测试",
-      tag: "#2QJPQ88LJ",
+      name: "测试部落改名",
+      tag: "#TESTTAG01",
       rank: "水晶2",
       category: "水晶2",
       capacity: 30,
-      time: "12月1号",
+      time: "比赛日",
       requirement: "测试条件"
     })
   });
@@ -231,7 +231,7 @@ test("Pages API seeds data, enforces ownership and capacity, and archives reset"
   assert.equal(response.status, 200);
   const archive = await readJson(response);
   assert.equal(archive.data.meta.mainTitle, "测试联赛");
-  assert.equal(archive.data.clans.find(clan => clan.id === "bingjingling").name, "冰精灵测试");
+  assert.equal(archive.data.clans.find(clan => clan.id === "bingjingling").name, "测试部落改名");
   assert.ok(archive.data.clans.find(clan => clan.id === "xiyang").subs
     .some(entry => entry.id === entryId));
 

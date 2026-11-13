@@ -12,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "coc-cwl-signup",
-      "database_id": "12ede25a-30ff-45d6-8c62-80f2958aec07"
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
     }
   ],
   // 每 6 小时检查一次容量：使用率超过 50% 时从最旧记录开始清理（3 个月内不动）。
