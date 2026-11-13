@@ -56,6 +56,14 @@ class HttpError extends Error {
   }
 }
 
+// 展示用时间统一按马来西亚时区（UTC+8）格式化。
+// Cloudflare Workers 运行时默认时区是 UTC，若不显式指定 timeZone，
+// 会按 UTC 输出，导致显示的时间比马来西亚时间慢 8 小时。
+const DISPLAY_TIME_ZONE = "Asia/Kuala_Lumpur";
+function formatDateTime(ms) {
+  return new Date(ms).toLocaleString("zh-CN", { hour12: false, timeZone: DISPLAY_TIME_ZONE });
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -426,7 +434,7 @@ async function pruneStorage(db, env) {
 
   if (report.deletedEntries || report.deletedLogs) {
     const oldest = report.oldestDeletedAt
-      ? new Date(report.oldestDeletedAt).toLocaleString("zh-CN", { hour12: false })
+      ? formatDateTime(report.oldestDeletedAt)
       : "无";
     await stmt(
       db,
@@ -861,7 +869,7 @@ async function handle(request, env) {
       entries: entries.map(e => ({
         id: e.id, clan: e.clan_name || e.clan_id, role: e.role,
         name: e.name, ownerToken: e.owner_token || null,
-        createdAt: new Date(e.created_at).toLocaleString("zh-CN", { hour12: false })
+        createdAt: formatDateTime(e.created_at)
       }))
     });
   }
@@ -1080,7 +1088,7 @@ async function handle(request, env) {
     const rows = await all(db, "SELECT * FROM logs ORDER BY id DESC");
     return json({
       logs: rows.map(row => ({
-        time: new Date(row.time).toLocaleString("zh-CN", { hour12: false }),
+        time: formatDateTime(row.time),
         type: row.type,
         clan: row.clan,
         details: row.details,
@@ -1096,7 +1104,7 @@ async function handle(request, env) {
       archives: rows.map(row => ({
         id: row.id,
         period: row.period,
-        createdAt: new Date(row.created_at).toLocaleString("zh-CN", { hour12: false })
+        createdAt: formatDateTime(row.created_at)
       }))
     });
   }
@@ -1106,7 +1114,7 @@ async function handle(request, env) {
     if (!row) return json({ error: "归档不存在" }, 404);
     return json({
       period: row.period,
-      createdAt: new Date(row.created_at).toLocaleString("zh-CN", { hour12: false }),
+      createdAt: formatDateTime(row.created_at),
       data: JSON.parse(row.payload)
     });
   }
