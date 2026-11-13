@@ -479,17 +479,26 @@ test("deleting an entry preserves the owner's device token in the audit log", as
   assert.ok(removal.details.includes("Preserve Me"));
 });
 
-test("only server-issued device tokens can sign up", async () => {
+test("only valid-format device tokens can sign up", async () => {
   const { onRequest } = await import(workerUrl);
   const env = { DB: new TestD1() };
 
-  // 伪造的令牌（格式合法但从未签发过）必须被拒绝。
+  // 格式非法的令牌（非 #U- 开头或含非法字符）必须被拒绝。
   let response = await runApi(onRequest, env, "/api/signup", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-device-token": "#U-DEADBEEF" },
-    body: JSON.stringify({ clanId: "xiyang", name: "Forged", role: "main", th: "19本" })
+    headers: { "content-type": "application/json", "x-device-token": "not-a-token" },
+    body: JSON.stringify({ clanId: "xiyang", name: "Bad", role: "main", th: "19本" })
   });
   assert.equal(response.status, 400);
+
+  // 格式正确但未签发过的令牌：为兼容迁移前已存于用户浏览器的旧令牌，
+  // 会被自动登记并放行（不影响正常用户报名）。
+  response = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": "#U-DEADBEEF" },
+    body: JSON.stringify({ clanId: "xiyang", name: "AutoRegistered", role: "sub", th: "" })
+  });
+  assert.equal(response.status, 200);
 
   // 服务端签发的令牌可以正常报名。
   const token = (await readJson(await runApi(onRequest, env, "/api/device", {
