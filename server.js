@@ -31,6 +31,14 @@ const ROOT = __dirname;
 const MAX_BODY = 64 * 1024; // 64KB
 const ALLOWED_TH = new Set(['', '19本', '18本', '17本', '16本', '15本及以下']);
 
+// 展示用时间统一按马来西亚时区（UTC+8）格式化。
+// 容器默认时区通常为 UTC，若不显式指定 timeZone，会按 UTC 输出，
+// 导致显示的时间比马来西亚时间慢 8 小时。
+const DISPLAY_TIME_ZONE = 'Asia/Kuala_Lumpur';
+function formatDateTime(ms) {
+  return new Date(ms).toLocaleString('zh-CN', { hour12: false, timeZone: DISPLAY_TIME_ZONE });
+}
+
 // ---------------------------------------------------------------------------
 // 数据库初始化
 // ---------------------------------------------------------------------------
@@ -378,20 +386,20 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/logs' && method === 'GET') {
       const rows = db.prepare('SELECT * FROM logs ORDER BY id DESC').all();
       return sendJson(res, 200, {
-        logs: rows.map(r => ({ time: new Date(r.time).toLocaleString('zh-CN', { hour12: false }), type: r.type, clan: r.clan, details: r.details, operator: r.operator, token: r.token }))
+        logs: rows.map(r => ({ time: formatDateTime(r.time), type: r.type, clan: r.clan, details: r.details, operator: r.operator, token: r.token }))
       });
     }
 
     if (p === '/api/archives' && method === 'GET') {
       const rows = db.prepare('SELECT id, period, created_at FROM archives ORDER BY id DESC').all();
-      return sendJson(res, 200, { archives: rows.map(r => ({ id: r.id, period: r.period, createdAt: new Date(r.created_at).toLocaleString('zh-CN', { hour12: false }) })) });
+      return sendJson(res, 200, { archives: rows.map(r => ({ id: r.id, period: r.period, createdAt: formatDateTime(r.created_at) })) });
     }
 
     const arcMatch = /^\/api\/archives\/(\d+)$/.exec(p);
     if (arcMatch && method === 'GET') {
       const row = db.prepare('SELECT * FROM archives WHERE id = ?').get(parseInt(arcMatch[1], 10));
       if (!row) return sendJson(res, 404, { error: '归档不存在' });
-      return sendJson(res, 200, { period: row.period, createdAt: new Date(row.created_at).toLocaleString('zh-CN', { hour12: false }), data: JSON.parse(row.payload) });
+      return sendJson(res, 200, { period: row.period, createdAt: formatDateTime(row.created_at), data: JSON.parse(row.payload) });
     }
 
     if (p === '/api/settings' && method === 'PUT') {
