@@ -185,6 +185,11 @@ async function adminPasswordConfigured(db, env) {
   return !!(await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'"));
 }
 
+function setupTokenRequired(db, env) {
+  const envSetupToken = typeof env.ADMIN_SETUP_TOKEN === "string" ? env.ADMIN_SETUP_TOKEN : "";
+  return { envSetupToken, required: !!envSetupToken };
+}
+
 async function setupAdminPassword(request, env) {
   const db = env.DB;
   if (await recordLoginAttempt(db, request, Date.now()) > 8) {
@@ -195,32 +200,55 @@ async function setupAdminPassword(request, env) {
   }
 
   const body = await readJson(request);
-  const token = String(body.token || "");
   const password = String(body.password || "");
-  if (!/^[0-9a-f]{64}$/i.test(token)) {
-    return json({ error: "一次性授权码无效" }, 403);
-  }
   if (password.length < 12 || password.length > 128) {
     return json({ error: "密码需为 12 至 128 个字符" }, 400);
   }
-  const setupToken = await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
-  if (!setupToken || !passwordMatches(token, setupToken.value)) {
-    return json({ error: "一次性授权码无效或已使用" }, 403);
+
+  // A setup token is only required when one has been explicitly configured
+  // (env ADMIN_SETUP_TOKEN, or a row in settings). Otherwise the very first
+  // setup call bootstraps the admin password without a token — this mirrors
+  // the common first-run bootstrap pattern used by self-hosted apps, so a
+  // misconfigured Cloudflare secret does not lock the admin out entirely.
+  const { envSetupToken, required } = setupTokenRequired(db, env);
+  const setupTokenRow = required
+    ? null
+    : await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
+  const tokenRequired = required || !!setupTokenRow;
+
+  let token = "";
+  if (tokenRequired) {
+    token = String(body.token || "");
+    if (!/^[0-9a-f]{64}$/i.test(token)) {
+      return json({ error: "一次性授权码无效" }, 403);
+    }
+    const expected = required ? envSetupToken : (setupTokenRow ? setupTokenRow.value : "");
+    if (!expected || !passwordMatches(token, expected)) {
+      return json({ error: "一次性授权码无效或已使用" }, 403);
+    }
   }
 
   const encoded = await hashAdminPassword(password);
+  const where = tokenRequired
+    ? `WHERE (EXISTS (SELECT 1 FROM settings WHERE key = 'admin_setup_token' AND value = ?)
+          OR ? <> '')
+       AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'adminPasswordHash')`
+    : `WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'adminPasswordHash')`;
   const inserted = await first(
     db,
     `INSERT INTO settings(key, value)
      SELECT 'adminPasswordHash', ?
-     WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'admin_setup_token' AND value = ?)
-       AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'adminPasswordHash')
+     ${where}
      RETURNING key`,
-    encoded, token
+    ...(tokenRequired ? [encoded, token, envSetupToken] : [encoded])
   );
-  if (!inserted) return json({ error: "一次性授权码无效或已使用" }, 403);
-  await stmt(db, "DELETE FROM settings WHERE key = 'admin_setup_token' AND value = ?")
-    .bind(token).run();
+  if (!inserted) {
+    return json({ error: tokenRequired ? "一次性授权码无效或已使用" : "管理员密码已初始化" }, 409);
+  }
+  if (tokenRequired && !required) {
+    await stmt(db, "DELETE FROM settings WHERE key = 'admin_setup_token' AND value = ?")
+      .bind(token).run();
+  }
   const sessionToken = randomHex(24);
   const expiresAt = Date.now() + ADMIN_SESSION_MS;
   await stmt(db, "INSERT INTO sessions(token, created_at, expires_at) VALUES(?, ?, ?)")
@@ -345,8 +373,16 @@ async function handle(request, env) {
 
   if (path === "/api/admin/setup/status") {
     if (method !== "GET") return json({ error: "method" }, 405);
-    const token = await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
-    return json({ available: !!token && !(await adminPasswordConfigured(db, env)) });
+    const { envSetupToken, required } = setupTokenRequired(db, env);
+    const setupTokenRow = required
+      ? null
+      : await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
+    const tokenRequired = required || !!setupTokenRow;
+    const configured = await adminPasswordConfigured(db, env);
+    return json({
+      available: !configured,
+      tokenRequired
+    });
   }
 
   if (path === "/api/admin/setup") {

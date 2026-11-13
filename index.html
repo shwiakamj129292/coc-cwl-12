@@ -314,8 +314,8 @@
                 <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-key"></i> 初始化管理员密码</h3>
                 <button type="button" onclick="closeAdminSetupModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <p class="text-xs text-slate-400">一次性授权码仅使用一次。密码需为 12 至 128 个字符。</p>
-            <input type="text" id="admin-setup-token" autocomplete="off" spellcheck="false" placeholder="粘贴一次性授权码" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            <p id="admin-setup-hint" class="text-xs text-slate-400">密码需为 12 至 128 个字符。</p>
+            <input type="text" id="admin-setup-token" autocomplete="off" spellcheck="false" placeholder="粘贴一次性授权码（如已设置）" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 hidden">
             <input type="password" id="admin-setup-password" autocomplete="new-password" placeholder="设置管理员密码（至少 12 位）" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
             <input type="password" id="admin-setup-confirm" autocomplete="new-password" placeholder="再次输入密码" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
             <div class="flex space-x-3 pt-2">
@@ -633,11 +633,19 @@
         function closeManagerLoginModal() { document.getElementById('manager-login-modal').classList.add('hidden'); }
         function openAdminSetupModal() {
             closeManagerLoginModal();
-            document.getElementById('admin-setup-token').value = '';
+            const tokenField = document.getElementById('admin-setup-token');
+            tokenField.value = '';
             document.getElementById('admin-setup-password').value = '';
             document.getElementById('admin-setup-confirm').value = '';
             document.getElementById('admin-setup-modal').classList.remove('hidden');
-            setTimeout(() => document.getElementById('admin-setup-token').focus(), 100);
+            api('/api/admin/setup/status').then(data => {
+                const needToken = !!data.tokenRequired;
+                tokenField.classList.toggle('hidden', !needToken);
+                document.getElementById('admin-setup-hint').textContent = needToken
+                    ? '请粘贴一次性授权码，并设置 12 至 128 位的管理员密码。'
+                    : '首次初始化：直接设置管理员密码即可（12 至 128 位）。';
+                setTimeout(() => (needToken ? tokenField : document.getElementById('admin-setup-password')).focus(), 50);
+            }).catch(() => {});
         }
         function closeAdminSetupModal() {
             document.getElementById('admin-setup-modal').classList.add('hidden');
