@@ -62,15 +62,52 @@ class TestD1 {
 const workerPath = path.join(__dirname, "../functions/api/[[path]].js");
 const workerSource = fs.readFileSync(workerPath, "utf8");
 const workerUrl = `data:text/javascript;base64,${Buffer.from(workerSource).toString("base64")}`;
+const workerEntrySource = fs.readFileSync(path.join(__dirname, "../worker.js"), "utf8");
 
 async function readJson(response) {
   return response.json();
+}
+
+async function loadWorker() {
+  const { onRequest, runMaintenance } = await import(workerUrl);
+  const factory = new Function(
+    "onRequest",
+    "runMaintenance",
+    workerEntrySource
+      .replace(/^import \{ onRequest, runMaintenance \} from ".+";\s*/m, "")
+      .replace("export default {", "return {")
+  );
+  return factory(onRequest, runMaintenance);
 }
 
 async function runApi(onRequest, env, route, options = {}) {
   const request = new Request(`https://signup.test${route}`, options);
   return onRequest({ request, env });
 }
+
+test("Worker serves built assets instead of rewriting them to index.html", async () => {
+  const worker = await loadWorker();
+  const requestedPaths = [];
+  const env = {
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        requestedPaths.push(path);
+        return new Response(path, {
+          headers: { "content-type": path.endsWith(".css") ? "text/css" : "text/html" }
+        });
+      }
+    }
+  };
+
+  const cssResponse = await worker.fetch(new Request("https://signup.test/assets/app.css"), env);
+  assert.equal(await cssResponse.text(), "/assets/app.css");
+  assert.equal(cssResponse.headers.get("content-type"), "text/css");
+
+  const homeResponse = await worker.fetch(new Request("https://signup.test/"), env);
+  assert.equal(await homeResponse.text(), "/index.html");
+  assert.deepEqual(requestedPaths, ["/assets/app.css", "/index.html"]);
+});
 
 test("Pages API seeds data, enforces ownership and capacity, and archives reset", async () => {
   const { onRequest } = await import(workerUrl);
