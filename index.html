@@ -343,6 +343,23 @@
         </div>
     </div>
 
+    <!-- Storage Capacity Modal (Admin Only) -->
+    <div id="storage-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-lg rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-hard-drive"></i> 存储容量检测</h3>
+                <button onclick="closeStorageModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div id="storage-body" class="overflow-y-auto space-y-3 pr-1 flex-1 min-h-0 text-sm">
+                <p class="text-xs text-slate-400">加载中...</p>
+            </div>
+            <div class="flex space-x-3 pt-2 border-t border-slate-800">
+                <button type="button" onclick="runStoragePrune()" id="storage-prune-btn" class="flex-1 bg-rose-600 hover:bg-rose-500 text-white py-2.5 rounded-xl text-sm font-bold transition">立即检查并清理</button>
+                <button type="button" onclick="closeStorageModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">关闭</button>
+            </div>
+        </div>
+    </div>
+
     <!-- History & Identity Binding Audit Modal (Admin Only) -->
     <div id="history-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
         <div class="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh]">
@@ -462,6 +479,7 @@
         let currentFilter = 'all';
         let rev = -1;
         let isFetching = false;
+        let storageAlerts = [];
 
         try { deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY) || ''; } catch(e) {}
         try { adminToken = localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch(e) {}
@@ -636,6 +654,11 @@
                         <i class="fa-solid fa-user-secret"></i>
                         <span>认证与修改审计</span>
                     </button>
+                    <button onclick="openStorageModal()" class="bg-cyan-700 hover:bg-cyan-600 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1 relative" title="存储容量检测与自动清理">
+                        <i class="fa-solid fa-hard-drive"></i>
+                        <span class="hidden sm:inline">存储容量</span>
+                        ${storageAlerts.length ? `<span class="bg-rose-500 text-white rounded-full px-1.5 text-[10px] font-bold">${storageAlerts.length}</span>` : ''}
+                    </button>
                     <button onclick="openChangePasswordModal()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1" title="修改管理员密码">
                         <i class="fa-solid fa-key"></i>
                         <span class="hidden sm:inline">改密码</span>
@@ -741,6 +764,7 @@
                 renderManagerPanel();
                 renderClans();
                 await fetchState(true);
+                refreshStorageBadge();
                 alert('验证成功，已进入管理员模式！你现在可以查看所有人绑定的多号与全部修改记录。');
             } catch (e) {
                 alert(e.status === 429
@@ -754,6 +778,7 @@
             try { await api('/api/admin/logout', { method: 'POST', auth: true }); } catch(e) {}
             adminToken = '';
             isManager = false;
+            storageAlerts = [];
             try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch(e) {}
             renderSystemMeta();
             renderManagerPanel();
@@ -1270,6 +1295,110 @@
             if (statsEl) statsEl.textContent = `正选：${totalSigned}/${totalCap} | 替补：${totalSubs} 人`;
         }
 
+        // ===== 存储容量检测（管理员） =====
+        function formatBytes(n) {
+            if (!Number.isFinite(n) || n <= 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let value = n;
+            let i = 0;
+            while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
+            return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+        }
+        function fmtTime(ms) {
+            if (!ms) return '';
+            return new Date(ms).toLocaleString('zh-CN', { hour12: false });
+        }
+        function renderStorageHtml(stats) {
+            const pct = Math.round((stats.percent || 0) * 100);
+            const barColor = stats.percent >= 0.8 ? 'bg-rose-500' : (stats.percent > 0.5 ? 'bg-amber-500' : 'bg-emerald-500');
+            const alertsHtml = (stats.alerts && stats.alerts.length)
+                ? stats.alerts.map(a => `<div class="rounded-lg border px-3 py-2 text-xs ${a.level === 'critical' ? 'bg-rose-950/60 border-rose-500/40 text-rose-300' : 'bg-amber-950/50 border-amber-500/40 text-amber-300'}"><i class="fa-solid fa-triangle-exclamation mr-1"></i>${escapeHtml(a.message)}</div>`).join('')
+                : `<div class="rounded-lg border px-3 py-2 text-xs bg-emerald-950/40 border-emerald-500/30 text-emerald-300"><i class="fa-solid fa-circle-check mr-1"></i>容量正常，暂无告警。</div>`;
+            const lp = stats.lastPrune;
+            const lastPruneHtml = lp
+                ? `<div class="text-[11px] text-slate-400 leading-relaxed">
+                    上次清理：${lp.triggered ? `删除报名 <strong class="text-amber-300">${lp.deletedEntries}</strong> 条、日志 <strong class="text-amber-300">${lp.deletedLogs}</strong> 条` : '未触发（容量未超阈值）'}
+                    ${lp.oldestDeletedAt ? `<br>最早删至：${escapeHtml(fmtTime(lp.oldestDeletedAt))}` : ''}
+                    ${lp.finishedAt ? `<br>时间：${escapeHtml(fmtTime(lp.finishedAt))}` : ''}
+                </div>`
+                : `<div class="text-[11px] text-slate-500">暂无清理记录。</div>`;
+            return `
+                <div class="flex items-center justify-between">
+                    <span class="text-xs text-slate-300">已用 <strong class="text-amber-300">${formatBytes(stats.usedBytes)}</strong> / 服务器额度 <strong class="text-slate-100">${formatBytes(stats.limitBytes)}</strong></span>
+                    <span class="text-xs font-bold ${stats.percent > 0.5 ? 'text-rose-400' : 'text-emerald-400'}">${pct}%</span>
+                </div>
+                <div class="w-full h-3 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+                    <div class="${barColor} h-full transition-all" style="width:${Math.max(2, Math.min(100, pct))}%"></div>
+                </div>
+                <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                    ${Object.keys(stats.tables || {}).map(key => {
+                        const t = stats.tables[key];
+                        return `<div>${escapeHtml(t.label)}：<strong class="text-slate-200">${t.count}</strong> · ${formatBytes(t.bytes)}</div>`;
+                    }).join('')}
+                </div>
+                <div class="text-[11px] text-slate-400">超过 <strong class="text-amber-300">${Math.round((stats.pruneTriggerPercent || 0.5) * 100)}%</strong> 时自动从最旧记录清理；<strong class="text-emerald-300">${stats.protectDays} 天内的记录永不删除</strong>（当前受保护 ${stats.protectedEntries} 条）。</div>
+                <div class="space-y-1.5">${alertsHtml}</div>
+                <div class="border-t border-slate-800 pt-2">${lastPruneHtml}</div>
+                <div class="flex items-center gap-2 pt-1">
+                    <label class="text-[11px] text-slate-400 shrink-0">按服务器实际额度(MB)：</label>
+                    <input id="storage-limit-input" type="number" min="1" value="${Math.round(stats.limitBytes / 1024 / 1024)}" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
+                    <button onclick="saveStorageLimit()" class="text-xs bg-slate-700 hover:bg-slate-600 text-amber-300 px-3 py-1.5 rounded-lg border border-slate-600 transition">保存额度</button>
+                </div>
+            `;
+        }
+        async function openStorageModal() {
+            if (!isManager) return;
+            document.getElementById('storage-modal').classList.remove('hidden');
+            document.getElementById('storage-body').innerHTML = '<p class="text-xs text-slate-400">加载中...</p>';
+            await loadStorageStats();
+        }
+        function closeStorageModal() { document.getElementById('storage-modal').classList.add('hidden'); }
+        async function loadStorageStats() {
+            const body = document.getElementById('storage-body');
+            try {
+                const stats = await api('/api/admin/storage', { auth: true });
+                storageAlerts = stats.alerts || [];
+                if (body) body.innerHTML = renderStorageHtml(stats);
+                renderManagerPanel();
+            } catch (e) {
+                if (body) body.innerHTML = `<p class="text-xs text-rose-400">${escapeHtml(e.message || '加载失败')}</p>`;
+            }
+        }
+        async function refreshStorageBadge() {
+            if (!isManager) { storageAlerts = []; renderManagerPanel(); return; }
+            try {
+                const stats = await api('/api/admin/storage', { auth: true });
+                storageAlerts = stats.alerts || [];
+            } catch (e) { storageAlerts = []; }
+            renderManagerPanel();
+        }
+        async function saveStorageLimit() {
+            const input = document.getElementById('storage-limit-input');
+            const mb = parseFloat(input && input.value);
+            if (!Number.isFinite(mb) || mb < 1) { alert('请输入有效的容量上限（MB）。'); return; }
+            try {
+                await api('/api/admin/storage', { method: 'PUT', auth: true, body: { limitMB: mb } });
+                await loadStorageStats();
+                alert(`已保存存储额度为 ${mb} MB。`);
+            } catch (e) { alert(e.message || '保存失败'); }
+        }
+        async function runStoragePrune() {
+            const btn = document.getElementById('storage-prune-btn');
+            if (btn) { btn.disabled = true; btn.textContent = '清理中...'; }
+            try {
+                const data = await api('/api/admin/storage/prune', { method: 'POST', auth: true });
+                storageAlerts = (data.stats && data.stats.alerts) || [];
+                const body = document.getElementById('storage-body');
+                if (body && data.stats) body.innerHTML = renderStorageHtml(data.stats);
+                renderManagerPanel();
+                const r = data.report || {};
+                alert(r.triggered
+                    ? `清理完成：删除报名 ${r.deletedEntries} 条、日志 ${r.deletedLogs} 条${r.oldestDeletedAt ? '，最早删至 ' + fmtTime(r.oldestDeletedAt) : ''}；3 个月内记录已保留。`
+                    : '当前容量未超过 50%，未做任何删除。');
+            } catch (e) { alert(e.message || '清理失败'); }
+            finally { if (btn) { btn.disabled = false; btn.textContent = '立即检查并清理'; } }
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
@@ -1542,6 +1671,7 @@
 
             // 2. 校验已保存的管理端会话
             isManager = await checkAdminSession();
+            if (isManager) refreshStorageBadge();
 
             // 3. 拉取权威状态
             await fetchState(false);

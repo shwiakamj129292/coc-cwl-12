@@ -33,11 +33,13 @@ class TestStatement {
 class TestD1 {
   constructor() {
     this.database = new DatabaseSync(":memory:");
-    const migration = fs.readFileSync(
-      path.join(__dirname, "../migrations/0001_init.sql"),
-      "utf8"
-    );
-    this.database.exec(migration);
+    const migrationsDir = path.join(__dirname, "../migrations");
+    const migrations = fs.readdirSync(migrationsDir)
+      .filter(name => name.endsWith(".sql"))
+      .sort();
+    for (const name of migrations) {
+      this.database.exec(fs.readFileSync(path.join(migrationsDir, name), "utf8"));
+    }
   }
 
   prepare(sql) {
@@ -475,4 +477,145 @@ test("deleting an entry preserves the owner's device token in the audit log", as
   const removal = logs.find(log => log.type === "REMOVE" && log.token === tokenA);
   assert.ok(removal, "REMOVE log should retain the owner's device token");
   assert.ok(removal.details.includes("Preserve Me"));
+});
+
+test("only server-issued device tokens can sign up", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1() };
+
+  // 伪造的令牌（格式合法但从未签发过）必须被拒绝。
+  let response = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": "#U-DEADBEEF" },
+    body: JSON.stringify({ clanId: "xiyang", name: "Forged", role: "main", th: "19本" })
+  });
+  assert.equal(response.status, 400);
+
+  // 服务端签发的令牌可以正常报名。
+  const token = (await readJson(await runApi(onRequest, env, "/api/device", {
+    method: "POST"
+  }))).deviceToken;
+  response = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": token },
+    body: JSON.stringify({ clanId: "xiyang", name: "Legit", role: "main", th: "19本" })
+  });
+  assert.equal(response.status, 200);
+});
+
+test("signup is IP rate limited to block spamming", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1() };
+  const token = (await readJson(await runApi(onRequest, env, "/api/device", {
+    method: "POST"
+  }))).deviceToken;
+  const signup = () => runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "cf-connecting-ip": "203.0.113.7",
+      "x-device-token": token
+    },
+    body: JSON.stringify({ clanId: "bingjingling", name: "Rate", role: "sub", th: "" })
+  });
+
+  let last;
+  for (let i = 0; i < 30; i += 1) last = await signup();
+  assert.equal(last.status, 200, "前 30 次应放行");
+  assert.equal((await signup()).status, 429, "第 31 次应被限速");
+});
+
+test("admin can view storage usage and set the server quota", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "storage-password-2026" };
+
+  let response = await runApi(onRequest, env, "/api/admin/storage");
+  assert.equal(response.status, 403);
+
+  const login = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.9" },
+    body: JSON.stringify({ password: "storage-password-2026" })
+  });
+  const adminHeaders = { authorization: `Bearer ${(await readJson(login)).adminToken}` };
+
+  response = await runApi(onRequest, env, "/api/admin/storage", { headers: adminHeaders });
+  assert.equal(response.status, 200);
+  let stats = await readJson(response);
+  assert.equal(stats.limitBytes, 500 * 1024 * 1024);
+  assert.ok(stats.usedBytes > 0);
+  assert.equal(stats.protectDays, 90);
+  assert.equal(stats.counts.entries, 44);
+  assert.ok(Array.isArray(stats.alerts));
+  // 容量检测应覆盖「全部数据表」：逐表明细齐全，且条数正确。
+  assert.ok(stats.tables, "应返回逐表明细");
+  const tableKeys = Object.keys(stats.tables);
+  for (const key of ["entries", "logs", "archives", "devices", "sessions", "loginAttempts", "rateLimits", "clans", "settings"]) {
+    assert.ok(tableKeys.includes(key), `明细应包含 ${key}`);
+    assert.ok(Number.isFinite(stats.tables[key].bytes), `${key} 应有字节估算`);
+  }
+  assert.equal(stats.tables.entries.count, 44);
+  assert.equal(stats.tables.clans.count, 7);
+
+  response = await runApi(onRequest, env, "/api/admin/storage", {
+    method: "PUT",
+    headers: { ...adminHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ limitMB: 10 })
+  });
+  assert.equal(response.status, 200);
+  stats = await readJson(await runApi(onRequest, env, "/api/admin/storage", { headers: adminHeaders }));
+  assert.equal(stats.limitBytes, 10 * 1024 * 1024);
+});
+
+test("capacity pruning deletes only records older than 3 months", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = {
+    DB: new TestD1(),
+    ADMIN_PASSWORD: "prune-password-2026",
+    STORAGE_LIMIT_BYTES: String(80 * 1024)
+  };
+
+  // 塞入一批「3 个月前」的旧记录，把用量推到 50% 阈值以上。
+  const old = Date.now() - 120 * 24 * 60 * 60 * 1000;
+  const statements = [];
+  for (let i = 0; i < 300; i += 1) {
+    statements.push(env.DB.prepare(
+      "INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) " +
+        "VALUES(?, 'xiyang', 'sub', ?, '#U-OLD', ?)"
+    ).bind(`old_${i}`, `旧记录${i}`, old));
+  }
+  await env.DB.batch(statements);
+  // 再放一条 3 个月内的新记录，它必须被永远保留。
+  await env.DB.prepare(
+    "INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) " +
+      "VALUES('new_keep', 'xiyang', 'sub', '保留', '#U-NEW', ?)"
+  ).bind(Date.now()).run();
+
+  const login = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.11" },
+    body: JSON.stringify({ password: "prune-password-2026" })
+  });
+  const adminHeaders = { authorization: `Bearer ${(await readJson(login)).adminToken}` };
+
+  const response = await runApi(onRequest, env, "/api/admin/storage/prune", {
+    method: "POST",
+    headers: adminHeaders
+  });
+  assert.equal(response.status, 200);
+  const { report } = await readJson(response);
+  assert.equal(report.triggered, true);
+  assert.ok(report.deletedEntries > 0, "应删除超期的最旧记录");
+  assert.ok(
+    report.oldestDeletedAt < Date.now() - 90 * 24 * 60 * 60 * 1000,
+    "删除的都应早于 3 个月保护期"
+  );
+
+  const kept = await env.DB.prepare("SELECT COUNT(*) AS n FROM entries WHERE id = 'new_keep'").first();
+  assert.equal(kept.n, 1, "3 个月内的新记录必须保留");
+
+  const tooRecent = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM entries WHERE created_at >= ?"
+  ).bind(Date.now() - 90 * 24 * 60 * 60 * 1000).first();
+  assert.equal(tooRecent.n, 45, "保护期内的记录不应被删（44 条预置 + 1 条新记录）");
 });
