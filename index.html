@@ -359,6 +359,9 @@
                 <button id="tab-btn-legacy" onclick="switchAuditTab('legacy')" class="bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition">
                     <i class="fa-solid fa-clock-rotate-left mr-1"></i> 旧设备码记录（迁移前）
                 </button>
+                <button id="tab-btn-removed" onclick="switchAuditTab('removed')" class="bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition">
+                    <i class="fa-solid fa-trash-can mr-1"></i> 已删除报名记录
+                </button>
                 <button id="tab-btn-logs" onclick="switchAuditTab('logs')" class="bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition">
                     <i class="fa-solid fa-list-ul mr-1"></i> 全部修改流水日志
                 </button>
@@ -369,6 +372,9 @@
 
             <!-- Legacy (pre-migration) Device Token View -->
             <div id="audit-legacy-view" class="hidden overflow-y-auto space-y-2 pr-1 flex-1 min-h-0"></div>
+
+            <!-- Removed (deleted) Entries View -->
+            <div id="audit-removed-view" class="hidden overflow-y-auto space-y-2 pr-1 flex-1 min-h-0"></div>
 
             <!-- Logs View -->
             <div id="audit-logs-view" class="hidden overflow-y-auto space-y-2 pr-1 flex-1 min-h-0"></div>
@@ -942,6 +948,7 @@
             const tabs = {
                 bindings: { btn: 'tab-btn-bindings', view: 'audit-bindings-view' },
                 legacy: { btn: 'tab-btn-legacy', view: 'audit-legacy-view' },
+                removed: { btn: 'tab-btn-removed', view: 'audit-removed-view' },
                 logs: { btn: 'tab-btn-logs', view: 'audit-logs-view' }
             };
             Object.keys(tabs).forEach(key => {
@@ -1069,7 +1076,41 @@
                 }).join('') + '</div>';
             }
 
-            // 2. 渲染详细审计流水日志
+            // 2. 渲染「已删除报名记录」：从操作日志中提取所有 REMOVE 记录，
+            //    专门展示被删掉的人的名字、设备码、部落、删除时间。
+            const removedContainer = document.getElementById('audit-removed-view');
+            const removedLogs = logsData.filter(log => log.type === 'REMOVE');
+            if (removedLogs.length === 0) {
+                removedContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60 space-y-2">
+                    <div>暂无已删除的报名记录</div>
+                    <div class="text-[10px] text-slate-600">任何人退赛或被管理员移除后，其报名信息与设备码会永久记录在这里。</div>
+                </div>`;
+            } else {
+                removedContainer.innerHTML = `<div class="bg-slate-900/60 border border-slate-700 rounded-lg p-2.5 text-[11px] flex flex-wrap gap-x-4 gap-y-1">
+                    <span class="text-slate-400">已删除报名：<strong class="text-rose-400">${removedLogs.length}</strong> 条</span>
+                    <span class="text-slate-500">设备码与历史报名记录永久保留，不随删除丢失</span>
+                </div>
+                <div class="space-y-2 pt-1">` + removedLogs.map(log => {
+                    const details = log.details || '';
+                    // 从详情中提取被删除的报名名称（格式：移除/退赛：xxx，原设备码：#U-xxx）
+                    const nameMatch = /移除\/退赛：(.+?)(?:，原设备码：|$)/.exec(details);
+                    const deviceMatch = /原设备码：(#U-[A-Z0-9]+)/i.exec(details);
+                    const name = nameMatch ? nameMatch[1] : details;
+                    const device = deviceMatch ? deviceMatch[1] : (log.token && /^#U-/i.test(log.token) ? log.token : '');
+                    return `
+                        <div class="bg-slate-800/90 border border-rose-500/30 rounded-xl p-3.5 text-xs space-y-2">
+                            <div class="flex justify-between items-center border-b border-slate-700/70 pb-1.5">
+                                <span class="font-bold text-rose-300"><i class="fa-solid fa-trash-can mr-1"></i>${escapeHtml(name)}</span>
+                                <span class="text-[11px] text-slate-400"><i class="fa-regular fa-clock mr-1"></i>${escapeHtml(log.time)}</span>
+                            </div>
+                            <div class="text-slate-300">部落：<span class="text-amber-300">${escapeHtml(log.clan)}</span></div>
+                            ${device ? `<div class="text-slate-300">设备码：<strong class="font-mono text-emerald-400">${escapeHtml(device)}</strong></div>` : ''}
+                            <div class="text-slate-300">操作人：<span class="text-sky-400">${escapeHtml(log.operator || '未知')}</span></div>
+                        </div>`;
+                }).join('') + '</div>';
+            }
+
+            // 3. 渲染详细审计流水日志
             const logsContainer = document.getElementById('audit-logs-view');
             if (logsData.length === 0) {
                 logsContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60">暂无修改日志</div>`;
