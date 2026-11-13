@@ -559,6 +559,7 @@
         }
 
         // 从当前权威状态推导「设备令牌 → 在列报名」绑定总览（服务端已校验归属，这里仅做展示）
+        // 注意：包含 #SYS_PRESET（系统预置），让管理员能看到全部报名，不再因为全是预置名单而显示空。
         function computeBindings() {
             const map = {};
             const ensure = (tok) => {
@@ -567,18 +568,16 @@
             };
             clans.forEach(c => {
                 c.players.forEach(p => {
-                    if (p.ownerToken && p.ownerToken !== '#SYS_PRESET') {
-                        const u = ensure(p.ownerToken);
-                        u.activeAccounts.push({ clan: c.name, role: '正选', name: p.text });
-                        u.historyNames.add(p.text);
-                    }
+                    const tok = p.ownerToken || '#UNKNOWN';
+                    const u = ensure(tok);
+                    u.activeAccounts.push({ clan: c.name, role: '正选', name: p.text });
+                    u.historyNames.add(p.text);
                 });
                 (c.subs || []).forEach(s => {
-                    if (s.ownerToken && s.ownerToken !== '#SYS_PRESET') {
-                        const u = ensure(s.ownerToken);
-                        u.activeAccounts.push({ clan: c.name, role: '替补', name: s.text });
-                        u.historyNames.add(s.text);
-                    }
+                    const tok = s.ownerToken || '#UNKNOWN';
+                    const u = ensure(tok);
+                    u.activeAccounts.push({ clan: c.name, role: '替补', name: s.text });
+                    u.historyNames.add(s.text);
                 });
             });
             // 从审计日志补充历史曾用名
@@ -588,7 +587,14 @@
                     if (m) map[log.token].historyNames.add(m[1]);
                 }
             });
-            return Object.values(map);
+            const users = Object.values(map);
+            // 排序：真实用户令牌在前，系统预置在后
+            users.sort((a, b) => {
+                const ap = a.token === '#SYS_PRESET' ? 1 : (a.token === '#UNKNOWN' ? 2 : 0);
+                const bp = b.token === '#SYS_PRESET' ? 1 : (b.token === '#UNKNOWN' ? 2 : 0);
+                return ap - bp;
+            });
+            return users;
         }
 
         async function manualRefresh() { return fetchState(true); }
@@ -963,13 +969,29 @@
             // 1. 渲染多号绑定总览
             const bindingsContainer = document.getElementById('audit-bindings-view');
             const users = computeBindings();
+            // 统计摘要
+            const totalEntries = users.reduce((s, u) => s + u.activeAccounts.length, 0);
+            const realUsers = users.filter(u => u.token !== '#SYS_PRESET' && u.token !== '#UNKNOWN');
+            const presetCount = users.find(u => u.token === '#SYS_PRESET')?.activeAccounts.length || 0;
+            const unknownCount = users.find(u => u.token === '#UNKNOWN')?.activeAccounts.length || 0;
+            const summaryHtml = `<div class="bg-slate-900/60 border border-slate-700 rounded-lg p-2.5 text-[11px] flex flex-wrap gap-x-4 gap-y-1">
+                <span class="text-slate-400">报名总数：<strong class="text-amber-400">${totalEntries}</strong></span>
+                <span class="text-slate-400">已绑定用户：<strong class="text-emerald-400">${realUsers.length}</strong> 人 / ${realUsers.reduce((s,u)=>s+u.activeAccounts.length,0)} 个号</span>
+                <span class="text-slate-400">系统预置：<strong class="text-slate-300">${presetCount}</strong></span>
+                ${unknownCount ? `<span class="text-rose-400">归属未知：<strong>${unknownCount}</strong></span>` : ''}
+            </div>`;
             if (users.length === 0) {
                 bindingsContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60 space-y-2">
-                    <div>暂无群友认证绑定数据</div>
-                    <div class="text-[10px] text-slate-600">若已有报名记录，请前往「实时修改流水日志」标签查看操作人。<br>种子名单（系统预置）不计入绑定统计。</div>
+                    <div>暂无任何报名数据</div>
+                    <div class="text-[10px] text-slate-600">请前往「实时修改流水日志」查看是否有操作记录。</div>
                 </div>`;
             } else {
-                bindingsContainer.innerHTML = users.map(u => {
+                bindingsContainer.innerHTML = summaryHtml + '<div class="space-y-2.5 pt-1">' + users.map(u => {
+                    const isPreset = u.token === '#SYS_PRESET';
+                    const isUnknown = u.token === '#UNKNOWN';
+                    const labelText = isPreset ? '系统预置名单（未认领）' : (isUnknown ? '归属未知' : '认证符号');
+                    const labelClass = isPreset ? 'text-slate-300' : (isUnknown ? 'text-rose-400' : 'text-emerald-400');
+                    const icon = isPreset ? 'fa-database' : (isUnknown ? 'fa-circle-question' : 'fa-fingerprint');
                     const activeHtml = u.activeAccounts.length > 0
                         ? u.activeAccounts.map(acc => `<span class="inline-block bg-emerald-950/70 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded text-[11px] mr-1.5 mb-1"><strong>${escapeHtml(acc.name)}</strong> (${escapeHtml(acc.clan)}·${acc.role})</span>`).join('')
                         : `<span class="text-slate-500 italic">当前无在列账号</span>`;
@@ -977,19 +999,17 @@
                     return `
                         <div class="bg-slate-800/90 border border-slate-700 rounded-xl p-3.5 text-xs space-y-2">
                             <div class="flex justify-between items-center border-b border-slate-700/70 pb-1.5">
-                                <span class="font-mono font-bold text-emerald-400 text-sm"><i class="fa-solid fa-fingerprint mr-1"></i>认证符号：${escapeHtml(u.token)}</span>
-                                <span class="text-[11px] text-slate-400">绑定账号数：<strong class="text-amber-400">${u.activeAccounts.length}</strong> 个</span>
+                                <span class="font-mono font-bold ${labelClass} text-sm"><i class="fa-solid ${icon} mr-1"></i>${labelText}：${isPreset || isUnknown ? '' : escapeHtml(u.token)}</span>
+                                <span class="text-[11px] text-slate-400">账号数：<strong class="text-amber-400">${u.activeAccounts.length}</strong></span>
                             </div>
                             <div>
-                                <div class="text-[11px] text-slate-400 mb-1">当前有效报名多号：</div>
+                                <div class="text-[11px] text-slate-400 mb-1">当前在列账号：</div>
                                 <div>${activeHtml}</div>
                             </div>
-                            <div class="text-[11px] text-slate-500">
-                                历史曾用名记录：${escapeHtml(histNamesArr.join('、'))}
-                            </div>
+                            ${histNamesArr.length ? `<div class="text-[11px] text-slate-500">历史曾用名：${escapeHtml(histNamesArr.join('、'))}</div>` : ''}
                         </div>
                     `;
-                }).join('');
+                }).join('') + '</div>';
             }
 
             // 2. 渲染详细审计流水日志
