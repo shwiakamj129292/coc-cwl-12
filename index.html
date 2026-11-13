@@ -423,7 +423,9 @@
     <script>
         // 后端 API 基地址：与页面同源（由 server.js 提供）
         const API_BASE = '';
-        const DEVICE_TOKEN_KEY = "coc_cwl_device_token_v2";
+        // v3：因后端引入设备令牌签发登记，强制所有用户重新申请令牌，
+        // 避免迁移前签发的旧令牌因未登记而被拦截。
+        const DEVICE_TOKEN_KEY = "coc_cwl_device_token_v3";
         const ADMIN_TOKEN_KEY = "coc_cwl_admin_token_v2";
         const STATE_CACHE_KEY = "coc_cwl_state_cache_v2";
 

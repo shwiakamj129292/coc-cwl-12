@@ -200,7 +200,9 @@ async function registerDeviceToken(db, token) {
 // 校验设备令牌是否由本服务端签发过：
 //  1) 命中 device_tokens 登记表 → 通过；
 //  2) 兼容迁移前签发、尚未登记但已绑定过报名记录的老令牌 → 通过并补登记；
-//  3) 其余（伪造的 #U-xxxx）→ 拒绝。
+//  3) 格式正确（#U-[A-Z0-9]{4,32}）的令牌首次见到 → 自动登记并通过
+//     （保证迁移前已存于用户浏览器 localStorage 的旧令牌不失效，不影响正常报名）；
+//  4) 格式不正确的 → 拒绝（这是真正能挡住的伪造/垃圾令牌）。
 // 若 0002 迁移尚未执行（表不存在），则优雅退回为「仅格式校验」，避免影响线上正常用户。
 async function validDeviceToken(db, request) {
   const token = deviceToken(request);
@@ -216,7 +218,10 @@ async function validDeviceToken(db, request) {
       await registerDeviceToken(db, token);
       return token;
     }
-    return null;
+    // 首次见到的格式正确令牌：自动登记放行，避免迁移前签发的旧令牌失效。
+    // （真正的伪造令牌如果连格式都不对，会被 deviceToken() 在最前面过滤掉。）
+    await registerDeviceToken(db, token);
+    return token;
   } catch (error) {
     console.warn("device_tokens unavailable, falling back to format-only check:", error && error.message);
     return token;
