@@ -325,6 +325,24 @@
         </div>
     </div>
 
+    <!-- Change Admin Password Modal -->
+    <div id="admin-change-password-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-key"></i> 修改管理员密码</h3>
+                <button type="button" onclick="closeChangePasswordModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">修改后需用新密码重新登录。</p>
+            <input type="password" id="change-pwd-old" autocomplete="current-password" placeholder="当前密码" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            <input type="password" id="change-pwd-new" autocomplete="new-password" placeholder="新密码（12 至 128 位）" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            <input type="password" id="change-pwd-confirm" autocomplete="new-password" placeholder="再次输入新密码" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+            <div class="flex space-x-3 pt-2">
+                <button type="button" onclick="closeChangePasswordModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
+                <button type="button" id="change-pwd-submit" onclick="submitChangePassword()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-900 py-2.5 rounded-xl text-sm font-bold transition shadow">确认修改</button>
+            </div>
+        </div>
+    </div>
+
     <!-- History & Identity Binding Audit Modal (Admin Only) -->
     <div id="history-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
         <div class="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[85vh]">
@@ -600,6 +618,10 @@
                         <i class="fa-solid fa-user-secret"></i>
                         <span>认证与修改审计</span>
                     </button>
+                    <button onclick="openChangePasswordModal()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1" title="修改管理员密码">
+                        <i class="fa-solid fa-key"></i>
+                        <span class="hidden sm:inline">改密码</span>
+                    </button>
                     <button onclick="resetAllSignupsForNewMonth()" class="bg-rose-600/80 hover:bg-rose-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1" title="新月开启一键清空名单">
                         <i class="fa-solid fa-rotate"></i>
                         <span class="hidden sm:inline">清空名单</span>
@@ -719,6 +741,46 @@
             renderManagerPanel();
             renderClans();
             alert('已退出管理模式。');
+        }
+        function openChangePasswordModal() {
+            if (!isManager) return;
+            document.getElementById('change-pwd-old').value = '';
+            document.getElementById('change-pwd-new').value = '';
+            document.getElementById('change-pwd-confirm').value = '';
+            document.getElementById('admin-change-password-modal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('change-pwd-old').focus(), 100);
+        }
+        function closeChangePasswordModal() {
+            document.getElementById('admin-change-password-modal').classList.add('hidden');
+        }
+        async function submitChangePassword() {
+            const oldPwd = document.getElementById('change-pwd-old').value;
+            const newPwd = document.getElementById('change-pwd-new').value;
+            const confirmPwd = document.getElementById('change-pwd-confirm').value;
+            const btn = document.getElementById('change-pwd-submit');
+            if (newPwd.length < 12 || newPwd.length > 128) {
+                alert('新密码需为 12 至 128 个字符。');
+                return;
+            }
+            if (newPwd !== confirmPwd) {
+                alert('两次输入的新密码不一致。');
+                return;
+            }
+            if (btn) { btn.disabled = true; btn.textContent = '修改中...'; }
+            try {
+                await api('/api/admin/password', {
+                    method: 'PUT',
+                    auth: true,
+                    body: { oldPassword: oldPwd, newPassword: newPwd }
+                });
+                closeChangePasswordModal();
+                alert('管理员密码已修改，请使用新密码重新登录。');
+                // The backend invalidates other sessions; current session stays valid.
+            } catch (e) {
+                alert(e.message || '修改失败，请重试。');
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = '确认修改'; }
+            }
         }
 
         function openEditTitleModal() {
