@@ -9,7 +9,6 @@ const fontAwesome = path.join(root, "node_modules", "@fortawesome", "fontawesome
 fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
 fs.mkdirSync(path.join(dist, "assets"), { recursive: true });
-fs.copyFileSync(path.join(root, "index.html"), path.join(dist, "index.html"));
 
 const cssDir = path.join(dist, "vendor", "fontawesome", "css");
 const fontsDir = path.join(dist, "vendor", "fontawesome", "webfonts");
@@ -26,3 +25,18 @@ execFileSync(process.execPath, [
   "--output", path.join(dist, "assets", "app.css"),
   "--minify"
 ], { cwd: root, stdio: "inherit" });
+
+const tailwindCss = fs.readFileSync(path.join(dist, "assets", "app.css"), "utf8");
+const fontAwesomeCss = ["fontawesome.min.css", "solid.min.css", "regular.min.css"]
+  .map(name => fs.readFileSync(path.join(fontAwesome, "css", name), "utf8"))
+  .join("\n")
+  .replace(/url\(\.\.\/webfonts\/([^/()]+\.woff2)(?:\?[^)]*)?\)/g, (_, filename) => {
+    const font = fs.readFileSync(path.join(fontsDir, filename)).toString("base64");
+    return `url(data:font/woff2;base64,${font})`;
+  });
+const bundledStyles = `<style>${tailwindCss}\n${fontAwesomeCss}</style>`;
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
+  .replace('<link href="/assets/app.css" rel="stylesheet">', "")
+  .replace('<link href="/vendor/fontawesome/css/all.min.css" rel="stylesheet">', "")
+  .replace("</head>", `${bundledStyles}\n</head>`);
+fs.writeFileSync(path.join(dist, "index.html"), html);
