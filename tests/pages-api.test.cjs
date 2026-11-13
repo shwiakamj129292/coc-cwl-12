@@ -223,7 +223,7 @@ test("one-time admin setup stores a hash, consumes its code, and enables login",
     .bind(setupCode).run();
 
   let response = await runApi(onRequest, env, "/api/admin/setup/status");
-  assert.deepEqual(await readJson(response), { available: true });
+  assert.deepEqual(await readJson(response), { available: true, tokenRequired: true });
 
   response = await runApi(onRequest, env, "/api/admin/setup", {
     method: "POST",
@@ -250,7 +250,7 @@ test("one-time admin setup stores a hash, consumes its code, and enables login",
     "SELECT value FROM settings WHERE key = 'admin_setup_token'"
   ).first(), null);
   response = await runApi(onRequest, env, "/api/admin/setup/status");
-  assert.deepEqual(await readJson(response), { available: false });
+  assert.deepEqual(await readJson(response), { available: false, tokenRequired: false });
 
   response = await runApi(onRequest, env, "/api/admin/login", {
     method: "POST",
@@ -272,6 +272,66 @@ test("one-time admin setup stores a hash, consumes its code, and enables login",
     body: JSON.stringify({ token: setupCode, password: "another-safe-password-2026" })
   });
   assert.equal(response.status, 409);
+});
+
+test("first-run bootstrap lets an admin set a password with no token", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1() };
+  const password = "bootstrap-password-2026";
+
+  let response = await runApi(onRequest, env, "/api/admin/setup/status");
+  assert.deepEqual(await readJson(response), { available: true, tokenRequired: false });
+
+  // No token provided on purpose — first-run bootstrap must accept it.
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.40" },
+    body: JSON.stringify({ password })
+  });
+  assert.equal(response.status, 200);
+  assert.ok((await readJson(response)).adminToken);
+
+  // Once configured, setup must be locked (409), and login with the new password works.
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.40" },
+    body: JSON.stringify({ password: "another-bootstrap-password-2026" })
+  });
+  assert.equal(response.status, 409);
+
+  response = await runApi(onRequest, env, "/api/admin/setup/status");
+  assert.deepEqual(await readJson(response), { available: false, tokenRequired: false });
+
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.40" },
+    body: JSON.stringify({ password })
+  });
+  assert.equal(response.status, 200);
+});
+
+test("env ADMIN_SETUP_TOKEN is accepted as the one-time setup code", async () => {
+  const { onRequest } = await import(workerUrl);
+  const setupCode = "c".repeat(64);
+  const env = { DB: new TestD1(), ADMIN_SETUP_TOKEN: setupCode };
+  const password = "env-token-password-2026";
+
+  let response = await runApi(onRequest, env, "/api/admin/setup/status");
+  assert.deepEqual(await readJson(response), { available: true, tokenRequired: true });
+
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.50" },
+    body: JSON.stringify({ password })
+  });
+  assert.equal(response.status, 403);
+
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.50" },
+    body: JSON.stringify({ token: setupCode, password })
+  });
+  assert.equal(response.status, 200);
 });
 
 test("ADMIN_PASSWORD takes priority over a stale stored password hash", async () => {
