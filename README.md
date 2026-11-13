@@ -16,6 +16,25 @@
 
 Cloudflare 免费 D1 单库上限为 500 MB，足够当前名单规模；免费计划也有请求额度，超额后需要等待额度重置或升级。详见 [D1 官方限制](https://developers.cloudflare.com/d1/platform/limits/)。
 
+## 存储容量检测与自动清理（升级须知）
+
+本版本新增了「存储容量」能力：管理员面板里会出现 **存储容量** 按钮，随时查看已用 / 服务器额度；
+面板会**逐表列出全部数据的占用**（报名记录、审计日志、历史归档、设备令牌、管理员会话、登录尝试、限流记录、部落配置、系统设置），
+使用率超过 50% 时系统会**自动从最旧记录开始清理**（3 个月内的记录永不删除），并在面板里告知"删了多少条、最早删到什么时候"，
+同时会检测异常的大数据使用（如短时间内大量报名 / 日志）并提醒管理员。
+每次清理还会顺带删除**已过期的管理员会话**与过期限流记录，避免这些临时表长期无界增长（过期即失效、即删，不影响正常登录与报名）。
+
+升级后请**执行一次**新迁移 [migrations/0002_storage_and_limits.sql](migrations/0002_storage_and_limits.sql)：
+在 D1 控制台 **Console** 粘贴执行，或运行
+`npx wrangler d1 execute coc-cwl-signup --remote --file=migrations/0002_storage_and_limits.sql`。
+该迁移会创建 `device_tokens`（设备令牌签发登记，报名只接受服务端签发过的令牌）与 `rate_limits`（报名 / 取令牌的 IP 限速）两张表，并回填老用户已签发的令牌。
+**即使尚未执行迁移，普通报名与管理员登录也不会受影响**（相关校验会自动降级放行），但建议尽快执行以启用全部防护。
+
+定时清理依赖 `wrangler.jsonc` 中的 Cron Triggers（默认每 6 小时一次），`npx wrangler deploy` 会自动生效。
+容量额度默认取服务器（Cloudflare D1）给你的 500 MB，可在管理员面板「存储容量」里改成你实际拿到的额度，
+或用 Secret / 变量 `STORAGE_LIMIT_BYTES` 覆盖（单位：字节）。
+
+
 本地预览可执行 `npm run preview`。未配置本地 D1 时只能确认静态页面；API smoke 需先在 Wrangler 本地配置 D1 绑定。`npm run build` 只将 `index.html` 复制到 `dist`，作为唯一公开的静态资源。
 
 ## 重要
