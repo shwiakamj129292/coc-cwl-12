@@ -24,10 +24,12 @@ export default {
       return onRequest({ request, env });
     }
 
-    // 所有非 API 请求统一返回 index.html（SPA）。
-    // HTML 必须始终取最新版，禁止浏览器/CDN 缓存——
-    // 否则每次部署后用户仍会看到旧页面（旧标签、旧脚本），直到缓存过期。
-    const assetUrl = new URL("/index.html", url);
+    // Serve built CSS/fonts directly; route page paths to the SPA entry.
+    // Keep the HTML uncached so deployments take effect immediately.
+    const assetPath = url.pathname === "/" || !url.pathname.includes(".")
+      ? "/index.html"
+      : url.pathname;
+    const assetUrl = new URL(assetPath, url);
     const response = await env.ASSETS.fetch(new Request(assetUrl, { method: "GET" }));
     const headers = new Headers(response.headers);
     headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
