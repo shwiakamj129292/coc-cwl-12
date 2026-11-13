@@ -950,6 +950,10 @@
             document.getElementById('history-modal').classList.remove('hidden');
             switchAuditTab('bindings');
 
+            // 以管理员身份强制刷新状态，确保所有报名的 ownerToken 可见
+            // （否则若 clans 是登录前加载的，会缺失归属令牌，绑定面板显示为空）
+            try { await fetchState(true); } catch (e) {}
+
             // 拉取审计日志（同时用于展示与补充历史曾用名）
             try {
                 const data = await api('/api/logs', { auth: true });
@@ -960,7 +964,10 @@
             const bindingsContainer = document.getElementById('audit-bindings-view');
             const users = computeBindings();
             if (users.length === 0) {
-                bindingsContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60">暂无群友认证绑定数据</div>`;
+                bindingsContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60 space-y-2">
+                    <div>暂无群友认证绑定数据</div>
+                    <div class="text-[10px] text-slate-600">若已有报名记录，请前往「实时修改流水日志」标签查看操作人。<br>种子名单（系统预置）不计入绑定统计。</div>
+                </div>`;
             } else {
                 bindingsContainer.innerHTML = users.map(u => {
                     const activeHtml = u.activeAccounts.length > 0
