@@ -363,7 +363,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (method === 'DELETE') {
         db.prepare('DELETE FROM entries WHERE id = ?').run(entryId);
-        addLog('REMOVE', clan.name, `移除/退赛：${entry.name}`, adminToken ? '管理员' : entry.name, adminToken || device);
+        // 保留该报名本人的设备码：即使管理员替他退赛，设备码与历史记录也留在日志中。
+        addLog('REMOVE', clan.name, `移除/退赛：${entry.name}${adminToken ? '（管理员操作）' : ''}，原设备码：${entry.owner_token}`, adminToken ? '管理员' : entry.name, entry.owner_token || adminToken || device);
         bumpRev();
         return sendJson(res, 200, { ok: true });
       }
@@ -375,7 +376,7 @@ const server = http.createServer(async (req, res) => {
     if (!token) return sendJson(res, 403, { error: '需要管理员权限' });
 
     if (p === '/api/logs' && method === 'GET') {
-      const rows = db.prepare('SELECT * FROM logs ORDER BY id DESC LIMIT 300').all();
+      const rows = db.prepare('SELECT * FROM logs ORDER BY id DESC').all();
       return sendJson(res, 200, {
         logs: rows.map(r => ({ time: new Date(r.time).toLocaleString('zh-CN', { hour12: false }), type: r.type, clan: r.clan, details: r.details, operator: r.operator, token: r.token }))
       });

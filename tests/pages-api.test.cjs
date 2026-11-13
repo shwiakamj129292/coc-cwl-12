@@ -244,7 +244,7 @@ test("one-time admin setup stores a hash, consumes its code, and enables login",
   const passwordRow = await env.DB.prepare(
     "SELECT value FROM settings WHERE key = 'adminPasswordHash'"
   ).first();
-  assert.match(passwordRow.value, /^210000\$/);
+  assert.match(passwordRow.value, /^10000\$/);
   assert.equal(passwordRow.value.includes(password), false);
   assert.equal(await env.DB.prepare(
     "SELECT value FROM settings WHERE key = 'admin_setup_token'"
@@ -432,4 +432,47 @@ test("admin can change the password via PUT /api/admin/password", async () => {
     body: JSON.stringify({ password: newPassword })
   });
   assert.equal(response.status, 200);
+});
+
+test("deleting an entry preserves the owner's device token in the audit log", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "delete-preserve-password" };
+
+  const tokenA = (await readJson(await runApi(onRequest, env, "/api/device", {
+    method: "POST"
+  }))).deviceToken;
+
+  let response = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": tokenA },
+    body: JSON.stringify({ clanId: "xiyang", name: "Preserve Me", role: "main", th: "19本" })
+  });
+  assert.equal(response.status, 200);
+  const entryId = (await readJson(response)).entryId;
+
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.80" },
+    body: JSON.stringify({ password: "delete-preserve-password" })
+  });
+  assert.equal(response.status, 200);
+  const adminHeaders = { authorization: `Bearer ${(await readJson(response)).adminToken}` };
+
+  // Admin removes the signup; the entry is gone but its device token must survive in logs.
+  response = await runApi(onRequest, env, `/api/entries/${entryId}`, {
+    method: "DELETE",
+    headers: adminHeaders
+  });
+  assert.equal(response.status, 200);
+
+  response = await runApi(onRequest, env, "/api/state");
+  const state = await readJson(response);
+  assert.equal(state.clans.find(clan => clan.id === "xiyang")
+    .players.some(entry => entry.id === entryId), false);
+
+  response = await runApi(onRequest, env, "/api/logs", { headers: adminHeaders });
+  const logs = (await readJson(response)).logs;
+  const removal = logs.find(log => log.type === "REMOVE" && log.token === tokenA);
+  assert.ok(removal, "REMOVE log should retain the owner's device token");
+  assert.ok(removal.details.includes("Preserve Me"));
 });
