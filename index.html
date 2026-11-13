@@ -345,27 +345,33 @@
 
     <!-- History & Identity Binding Audit Modal (Admin Only) -->
     <div id="history-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-        <div class="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[85vh]">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh]">
             <div class="flex justify-between items-center border-b border-slate-800 pb-3">
                 <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-user-secret"></i> 管理员专属：认证号绑定与修改审计</h3>
                 <button onclick="closeHistoryModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
             </div>
             
             <!-- Tabs -->
-            <div class="flex gap-2 border-b border-slate-800 pb-2">
+            <div class="flex flex-wrap gap-2 border-b border-slate-800 pb-2">
                 <button id="tab-btn-bindings" onclick="switchAuditTab('bindings')" class="bg-amber-500 text-slate-900 font-bold text-xs px-3 py-1.5 rounded-lg transition">
                     <i class="fa-solid fa-id-card-clip mr-1"></i> 多号绑定总览
                 </button>
+                <button id="tab-btn-legacy" onclick="switchAuditTab('legacy')" class="bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition">
+                    <i class="fa-solid fa-clock-rotate-left mr-1"></i> 旧设备码记录（迁移前）
+                </button>
                 <button id="tab-btn-logs" onclick="switchAuditTab('logs')" class="bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition">
-                    <i class="fa-solid fa-clock-rotate-left mr-1"></i> 实时修改流水日志
+                    <i class="fa-solid fa-list-ul mr-1"></i> 全部修改流水日志
                 </button>
             </div>
 
             <!-- Binding View -->
-            <div id="audit-bindings-view" class="overflow-y-auto space-y-2.5 pr-1 flex-1"></div>
+            <div id="audit-bindings-view" class="overflow-y-auto space-y-2.5 pr-1 flex-1 min-h-0"></div>
+
+            <!-- Legacy (pre-migration) Device Token View -->
+            <div id="audit-legacy-view" class="hidden overflow-y-auto space-y-2 pr-1 flex-1 min-h-0"></div>
 
             <!-- Logs View -->
-            <div id="audit-logs-view" class="hidden overflow-y-auto space-y-2 pr-1 flex-1"></div>
+            <div id="audit-logs-view" class="hidden overflow-y-auto space-y-2 pr-1 flex-1 min-h-0"></div>
 
             <div class="flex justify-between items-center pt-2 border-t border-slate-800">
                 <button onclick="closeHistoryModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-5 py-2.5 rounded-xl transition font-medium w-full">关闭</button>
@@ -933,22 +939,37 @@
         }
 
         function switchAuditTab(tab) {
-            const btnBindings = document.getElementById('tab-btn-bindings');
-            const btnLogs = document.getElementById('tab-btn-logs');
-            const viewBindings = document.getElementById('audit-bindings-view');
-            const viewLogs = document.getElementById('audit-logs-view');
+            const tabs = {
+                bindings: { btn: 'tab-btn-bindings', view: 'audit-bindings-view' },
+                legacy: { btn: 'tab-btn-legacy', view: 'audit-legacy-view' },
+                logs: { btn: 'tab-btn-logs', view: 'audit-logs-view' }
+            };
+            Object.keys(tabs).forEach(key => {
+                const btn = document.getElementById(tabs[key].btn);
+                const view = document.getElementById(tabs[key].view);
+                if (!btn || !view) return;
+                const active = key === tab;
+                btn.className = active
+                    ? 'bg-amber-500 text-slate-900 font-bold text-xs px-3 py-1.5 rounded-lg transition'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition';
+                view.classList.toggle('hidden', !active);
+            });
+        }
 
-            if (tab === 'bindings') {
-                btnBindings.className = 'bg-amber-500 text-slate-900 font-bold text-xs px-3 py-1.5 rounded-lg transition';
-                btnLogs.className = 'bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition';
-                viewBindings.classList.remove('hidden');
-                viewLogs.classList.add('hidden');
-            } else {
-                btnLogs.className = 'bg-amber-500 text-slate-900 font-bold text-xs px-3 py-1.5 rounded-lg transition';
-                btnBindings.className = 'bg-slate-800 text-slate-300 hover:bg-slate-700 font-medium text-xs px-3 py-1.5 rounded-lg transition';
-                viewLogs.classList.remove('hidden');
-                viewBindings.classList.add('hidden');
-            }
+        // 从系统操作日志聚合「迁移前/历史」设备码：每个设备码对应哪几个号（操作人）。
+        // 新报名名单在「多号绑定总览」，这里单独放迁移前旧数据，两者分开显示互不干扰。
+        function computeLegacyRecords() {
+            const map = {};
+            logsData.forEach(log => {
+                const tok = log.token;
+                if (!tok || !/^#U-/i.test(tok)) return; // 只统计真实设备码，跳过管理员会话令牌
+                if (!map[tok]) map[tok] = { token: tok, names: new Set(), count: 0, lastTime: '' };
+                const rec = map[tok];
+                rec.count += 1;
+                if (log.operator && log.operator !== '管理员') rec.names.add(log.operator);
+                if (!rec.lastTime) rec.lastTime = log.time; // logs 按时间倒序，首条即最近一次
+            });
+            return Object.values(map).sort((a, b) => b.count - a.count);
         }
 
         async function openHistoryModal() {
@@ -1009,6 +1030,42 @@
                             ${histNamesArr.length ? `<div class="text-[11px] text-slate-500">历史曾用名：${escapeHtml(histNamesArr.join('、'))}</div>` : ''}
                         </div>
                     `;
+                }).join('') + '</div>';
+            }
+
+            // 1b. 渲染「旧版本（迁移前）设备码」独立区域：从操作日志聚合，
+            //     与上方新报名名单分开放，方便管理员核对迁移前的旧数据。
+            const legacyContainer = document.getElementById('audit-legacy-view');
+            const legacyRecords = computeLegacyRecords();
+            if (legacyRecords.length === 0) {
+                legacyContainer.innerHTML = `<div class="text-center py-8 text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-dashed border-slate-700/60 space-y-2">
+                    <div>暂无旧版本设备码记录</div>
+                    <div class="text-[10px] text-slate-600">迁移前的报名设备码会从系统操作日志中自动提取并显示在这里，与「多号绑定总览」的新报名分开保存。</div>
+                </div>`;
+            } else {
+                const totalNames = legacyRecords.reduce((s, r) => s + r.names.size, 0);
+                legacyContainer.innerHTML = `<div class="bg-slate-900/60 border border-slate-700 rounded-lg p-2.5 text-[11px] flex flex-wrap gap-x-4 gap-y-1">
+                    <span class="text-slate-400">旧设备码：<strong class="text-amber-400">${legacyRecords.length}</strong> 个</span>
+                    <span class="text-slate-400">涉及号：<strong class="text-emerald-400">${totalNames}</strong> 个</span>
+                    <span class="text-slate-500">来源：系统操作日志（迁移前旧数据，独立留存）</span>
+                </div>
+                <div class="space-y-2 pt-1">` + legacyRecords.map(rec => {
+                    const names = Array.from(rec.names);
+                    const namesHtml = names.length
+                        ? names.map(n => `<span class="inline-block bg-slate-700/70 text-slate-200 border border-slate-600/50 px-2 py-0.5 rounded text-[11px] mr-1.5 mb-1">${escapeHtml(n)}</span>`).join('')
+                        : '<span class="text-slate-500 italic">未记录具体号</span>';
+                    return `
+                        <div class="bg-slate-800/90 border border-slate-700 rounded-xl p-3.5 text-xs space-y-2">
+                            <div class="flex justify-between items-center border-b border-slate-700/70 pb-1.5">
+                                <span class="font-mono font-bold text-emerald-400 text-sm"><i class="fa-solid fa-fingerprint mr-1"></i>${escapeHtml(rec.token)}</span>
+                                <span class="text-[11px] text-slate-400">记录 <strong class="text-amber-400">${rec.count}</strong> 条 · ${rec.names.size} 个号</span>
+                            </div>
+                            <div>
+                                <div class="text-[11px] text-slate-400 mb-1">对应用号（操作人）：</div>
+                                <div>${namesHtml}</div>
+                            </div>
+                            ${rec.lastTime ? `<div class="text-[10px] text-slate-500">最近一次操作：${escapeHtml(rec.lastTime)}</div>` : ''}
+                        </div>`;
                 }).join('') + '</div>';
             }
 

@@ -1,6 +1,14 @@
 const ADMIN_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 5 * 60 * 1000;
-const PASSWORD_HASH_ITERATIONS = 210000;
+// PBKDF2-HMAC-SHA256 迭代次数。
+// Cloudflare Workers 免费版单请求 CPU 预算只有 10ms，而 210000 次迭代需要约 80ms，
+// 会在「初始化密码 / 登录 / 修改密码」时超出预算被运行时终止，前端只能看到 500
+// 「服务器内部错误」——这正是之前无论怎么设密码都登不进、改密码必报错的根因。
+// 这里改为 10000 次（实测约 4ms，安全地落在免费版预算内）。
+// 付费版（CPU 上限 30s）可通过环境变量 PASSWORD_HASH_ITERATIONS 提高强度。
+const PASSWORD_HASH_ITERATIONS = 10000;
+const MIN_PASSWORD_HASH_ITERATIONS = 1000;
+const MAX_PASSWORD_HASH_ITERATIONS = 1000000;
 const DEFAULT_ADMIN_PASSWORD = "";
 const MAX_BODY = 64 * 1024;
 const ALLOWED_TH = new Set(["", "19本", "18本", "17本", "16本", "15本及以下"]);
@@ -135,7 +143,20 @@ function hexToBytes(value) {
   return Uint8Array.from(value.match(/.{2}/g), byte => parseInt(byte, 16));
 }
 
-async function hashAdminPassword(password, saltHex, iterations = PASSWORD_HASH_ITERATIONS) {
+// 允许通过环境变量覆盖迭代次数（付费版可调高），并做范围约束，防止误配。
+function passwordIterations(env) {
+  const value = Number.parseInt(env && env.PASSWORD_HASH_ITERATIONS, 10);
+  if (Number.isInteger(value) &&
+      value >= MIN_PASSWORD_HASH_ITERATIONS && value <= MAX_PASSWORD_HASH_ITERATIONS) {
+    return value;
+  }
+  return PASSWORD_HASH_ITERATIONS;
+}
+
+// 参考开源社区常用做法：随机盐 + PBKDF2-HMAC-SHA256（Web Crypto）。
+// 存储格式：`<iterations>$<saltHex>$<hashHex>`（自描述，便于日后平滑调参）。
+async function hashPassword(password, saltHex, iterations) {
+  const rounds = iterations || PASSWORD_HASH_ITERATIONS;
   const salt = saltHex ? hexToBytes(saltHex) : crypto.getRandomValues(new Uint8Array(16));
   if (!salt) throw new Error("invalid password salt");
   const key = await crypto.subtle.importKey(
@@ -146,22 +167,22 @@ async function hashAdminPassword(password, saltHex, iterations = PASSWORD_HASH_I
     ["deriveBits"]
   );
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt, iterations },
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations: rounds },
     key,
     256
   );
-  return `${iterations}$${bytesToHex(salt)}$${bytesToHex(new Uint8Array(bits))}`;
+  return `${rounds}$${bytesToHex(salt)}$${bytesToHex(new Uint8Array(bits))}`;
 }
 
-async function verifyAdminPassword(password, encoded) {
+async function verifyPassword(password, encoded) {
   const [iterationText, saltHex, expectedHex, extra] = String(encoded || "").split("$");
-  const iterations = Number(iterationText);
+  const rounds = Number(iterationText);
   const expected = hexToBytes(expectedHex || "");
-  if (extra !== undefined || !Number.isInteger(iterations) ||
-      iterations < 100000 || iterations > 1000000 || !expected) {
+  if (extra !== undefined || !Number.isInteger(rounds) ||
+      rounds < MIN_PASSWORD_HASH_ITERATIONS || rounds > MAX_PASSWORD_HASH_ITERATIONS || !expected) {
     return false;
   }
-  const actualHex = (await hashAdminPassword(password, saltHex, iterations)).split("$")[2];
+  const actualHex = (await hashPassword(password, saltHex, rounds)).split("$")[2];
   return passwordMatches(actualHex, expectedHex);
 }
 
@@ -193,7 +214,7 @@ async function verifyCurrentAdminPassword(db, env, candidate) {
   const configuredPassword = typeof env.ADMIN_PASSWORD === "string" ? env.ADMIN_PASSWORD : "";
   if (configuredPassword) return passwordMatches(candidate, configuredPassword);
   const storedHash = await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'");
-  if (storedHash) return verifyAdminPassword(candidate, storedHash.value);
+  if (storedHash) return verifyPassword(candidate, storedHash.value);
   return passwordMatches(candidate, DEFAULT_ADMIN_PASSWORD);
 }
 
@@ -240,7 +261,7 @@ async function setupAdminPassword(request, env) {
     }
   }
 
-  const encoded = await hashAdminPassword(password);
+  const encoded = await hashPassword(password, null, passwordIterations(env));
   const where = tokenRequired
     ? `WHERE (EXISTS (SELECT 1 FROM settings WHERE key = 'admin_setup_token' AND value = ?)
           OR ? <> '')
@@ -380,7 +401,7 @@ async function changeAdminPassword(request, env) {
     return json({ error: "当前密码不正确" }, 401);
   }
 
-  const encoded = await hashAdminPassword(newPassword);
+  const encoded = await hashPassword(newPassword, null, passwordIterations(env));
   await stmt(db, "INSERT INTO settings(key, value) VALUES('adminPasswordHash', ?) " +
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(encoded).run();
   // Force other sessions to re-login with the new password.
@@ -598,10 +619,20 @@ async function handle(request, env) {
           ? "id = ? AND owner_token = '#SYS_PRESET'"
           : "id = ? AND owner_token = ?";
       const args = admin ? [entryId] : canClaim ? [entryId] : [entryId, device];
+      // 删除报名时，日志里始终记录「该报名本人的设备码」而不是管理员令牌，
+      // 这样即便管理员替他退赛，这个人的设备码与历史报名记录也会永久留在日志中
+      // （任何人都删不掉，因为只新增不修改），便于日后核对迁移前/退赛前的数据。
       const result = await saveChange(
         db,
         stmt(db, `DELETE FROM entries WHERE ${condition}`, ...args),
-        logStatement(db, "REMOVE", clan.name, `移除/退赛：${entry.name}`, admin ? "管理员" : entry.name, admin || device)
+        logStatement(
+          db,
+          "REMOVE",
+          clan.name,
+          `移除/退赛：${entry.name}${admin ? "（管理员操作）" : ""}，原设备码：${entry.owner_token}`,
+          admin ? "管理员" : entry.name,
+          entry.owner_token || admin || device
+        )
       );
       if (!result) return json({ error: "无权操作该报名" }, 403);
       return json({ ok: true });
@@ -630,7 +661,8 @@ async function handle(request, env) {
   if (!token) return json({ error: "需要管理员权限" }, 403);
 
   if (path === "/api/logs") {
-    const rows = await all(db, "SELECT * FROM logs ORDER BY id DESC LIMIT 300");
+    // 返回全部历史记录（不再截断），管理员可下拉查看完整报名/操作历史。
+    const rows = await all(db, "SELECT * FROM logs ORDER BY id DESC");
     return json({
       logs: rows.map(row => ({
         time: new Date(row.time).toLocaleString("zh-CN", { hour12: false }),
