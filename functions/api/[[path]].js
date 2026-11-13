@@ -17,6 +17,38 @@ const VALID_COLORS = new Set([
   "sky", "indigo", "purple", "pink", "slate"
 ]);
 
+// ---------------------------------------------------------------------------
+// 存储容量治理
+// 容量基准以「服务器（Cloudflare D1）实际额度」为准：免费单库 500MB，付费可调。
+// 可用环境变量 STORAGE_LIMIT_BYTES 覆盖，或由管理端「存储容量」面板写入 settings。
+// ---------------------------------------------------------------------------
+const DEFAULT_STORAGE_LIMIT_BYTES = 500 * 1024 * 1024; // 服务器默认额度：500 MB
+const STORAGE_PRUNE_TRIGGER = 0.5;  // 使用率超过 50% 才触发清理
+const STORAGE_PRUNE_TARGET = 0.45;  // 清理到 45% 即停（留滞回，避免反复抖动、删太狠）
+const RECORD_PROTECT_MS = 90 * 24 * 60 * 60 * 1000; // 3 个月内的记录永不删除
+// 每行/每表的基础开销（SQLite 行头、索引、页对齐等，用于估算，偏保守）
+const ENTRY_ROW_BYTES = 96;
+const LOG_ROW_BYTES = 128;
+const ARCHIVE_ROW_BYTES = 160;
+const DEVICE_ROW_BYTES = 64;
+const SESSION_ROW_BYTES = 72;
+const LOGIN_ROW_BYTES = 64;
+const RATE_ROW_BYTES = 64;
+const CLAN_ROW_BYTES = 128;
+const SETTINGS_ROW_BYTES = 64;
+const BASE_DB_BYTES = 64 * 1024;
+
+// 写操作 IP 级限速（防刷）。数值取得比较宽松，避免影响正常群友报名。
+const SIGNUP_RATE_LIMIT = 30;
+const SIGNUP_RATE_WINDOW_MS = 10 * 60 * 1000;
+const DEVICE_RATE_LIMIT = 30;
+const DEVICE_RATE_WINDOW_MS = 10 * 60 * 1000;
+
+// 异常大数据使用告警阈值（用于通知管理员）
+const ALERT_ENTRIES_24H = 200;   // 24 小时内新增报名超过该值 → 疑似异常刷量
+const ALERT_LOGS_24H = 2000;     // 24 小时内新增日志超过该值 → 疑似异常刷量
+const ALERT_LOG_ROWS = 20000;    // 日志总条数超过该值 → 增长较快提醒
+
 class HttpError extends Error {
   constructor(status, message) {
     super(message);
@@ -108,6 +140,340 @@ function randomHex(byteLength) {
 function deviceToken(request) {
   const value = request.headers.get("x-device-token") || "";
   return /^#U-[A-Z0-9]{4,32}$/.test(value) ? value : null;
+}
+
+function num(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function clientIp(request) {
+  return request.headers.get("cf-connecting-ip")
+    || request.headers.get("x-real-ip")
+    || request.headers.get("x-forwarded-for")?.split(",")[0].trim()
+    || "unknown";
+}
+
+// 通用 IP 级滑动窗口限速，返回 { exceeded, count, limit }。
+// 失败时「放行」（fail-open）：例如 0002 迁移尚未执行、rate_limits 表不存在时，
+// 宁可暂时不拦，也不能让正常群友报名失败。
+async function checkRateLimit(db, request, scope, limit, windowMs) {
+  try {
+    return await rateLimitDecision(db, request, scope, limit, windowMs);
+  } catch (error) {
+    console.warn("rate limit unavailable, allowing request:", error && error.message);
+    return { exceeded: false, count: 0, limit };
+  }
+}
+
+async function rateLimitDecision(db, request, scope, limit, windowMs) {
+  const ip = clientIp(request);
+  const now = Date.now();
+  const row = await first(
+    db,
+    `INSERT INTO rate_limits(scope, ip, window_start, count) VALUES(?, ?, ?, 1)
+     ON CONFLICT(scope, ip) DO UPDATE SET
+       window_start = CASE WHEN rate_limits.window_start <= ? THEN excluded.window_start ELSE rate_limits.window_start END,
+       count = CASE WHEN rate_limits.window_start <= ? THEN 1 ELSE rate_limits.count + 1 END
+     RETURNING count AS count`,
+    scope, ip, now, now - windowMs, now - windowMs
+  );
+  const count = num(row && row.count);
+  // 仅在窗口重置（count === 1）时做一次过期清理，避免每次请求都产生写入。
+  if (count <= 1) {
+    await stmt(db, "DELETE FROM rate_limits WHERE window_start <= ?", now - 24 * 60 * 60 * 1000).run();
+  }
+  return { exceeded: count > limit, count, limit };
+}
+
+// 登记一个由服务端签发的设备令牌。
+async function registerDeviceToken(db, token) {
+  const now = Date.now();
+  await stmt(
+    db,
+    "INSERT INTO device_tokens(token, created_at, last_seen) VALUES(?, ?, ?) " +
+      "ON CONFLICT(token) DO UPDATE SET last_seen = excluded.last_seen",
+    token, now, now
+  ).run();
+}
+
+// 校验设备令牌是否由本服务端签发过：
+//  1) 命中 device_tokens 登记表 → 通过；
+//  2) 兼容迁移前签发、尚未登记但已绑定过报名记录的老令牌 → 通过并补登记；
+//  3) 其余（伪造的 #U-xxxx）→ 拒绝。
+// 若 0002 迁移尚未执行（表不存在），则优雅退回为「仅格式校验」，避免影响线上正常用户。
+async function validDeviceToken(db, request) {
+  const token = deviceToken(request);
+  if (!token) return null;
+  try {
+    const known = await first(db, "SELECT token FROM device_tokens WHERE token = ?", token);
+    if (known) {
+      await stmt(db, "UPDATE device_tokens SET last_seen = ? WHERE token = ?", Date.now(), token).run();
+      return token;
+    }
+    const legacy = await first(db, "SELECT id FROM entries WHERE owner_token = ? LIMIT 1", token);
+    if (legacy) {
+      await registerDeviceToken(db, token);
+      return token;
+    }
+    return null;
+  } catch (error) {
+    console.warn("device_tokens unavailable, falling back to format-only check:", error && error.message);
+    return token;
+  }
+}
+
+// 估算数据库当前占用的字节数。
+// D1 没有直接暴露「已用字节」的接口，这里遍历**全部 9 张表**逐表统计
+// 文本字节 + 每行固定开销 + 库文件基础开销来估算（偏保守，宁可高估不低估）。
+// 表不存在时（例如 0002 迁移尚未执行）跳过该表，不影响其余统计。
+async function estimateUsageBytes(db) {
+  const safe = sql => first(db, sql).catch(() => null);
+  const [entries, logs, archives, devices, sessions, loginAttempts, rateLimits, clans, settings] = await Promise.all([
+    first(db, `SELECT COUNT(*) AS n,
+      COALESCE(SUM(LENGTH(COALESCE(id,'')) + LENGTH(COALESCE(clan_id,'')) + LENGTH(COALESCE(role,''))
+        + LENGTH(COALESCE(name,'')) + LENGTH(COALESCE(owner_token,''))), 0) AS text_bytes FROM entries`),
+    first(db, `SELECT COUNT(*) AS n,
+      COALESCE(SUM(LENGTH(COALESCE(type,'')) + LENGTH(COALESCE(clan,'')) + LENGTH(COALESCE(details,''))
+        + LENGTH(COALESCE(operator,'')) + LENGTH(COALESCE(token,''))), 0) AS text_bytes FROM logs`),
+    first(db, `SELECT COUNT(*) AS n,
+      COALESCE(SUM(LENGTH(COALESCE(period,'')) + LENGTH(COALESCE(payload,''))), 0) AS text_bytes FROM archives`),
+    safe(`SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(COALESCE(token,''))), 0) AS text_bytes FROM device_tokens`),
+    safe(`SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(COALESCE(token,''))), 0) AS text_bytes FROM sessions`),
+    safe(`SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(COALESCE(ip,''))), 0) AS text_bytes FROM login_attempts`),
+    safe(`SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(COALESCE(scope,'')) + LENGTH(COALESCE(ip,''))), 0) AS text_bytes FROM rate_limits`),
+    safe(`SELECT COUNT(*) AS n,
+      COALESCE(SUM(LENGTH(COALESCE(id,'')) + LENGTH(COALESCE(name,'')) + LENGTH(COALESCE(tag,''))
+        + LENGTH(COALESCE(rank,'')) + LENGTH(COALESCE(category,'')) + LENGTH(COALESCE(time,''))
+        + LENGTH(COALESCE(requirement,''))), 0) AS text_bytes FROM clans`),
+    safe(`SELECT COUNT(*) AS n,
+      COALESCE(SUM(LENGTH(COALESCE(key,'')) + LENGTH(COALESCE(value,''))), 0) AS text_bytes FROM settings`)
+  ]);
+
+  const table = (label, row, rowBytes) => {
+    const count = num(row && row.n);
+    return { label, count, bytes: num(row && row.text_bytes) + count * rowBytes };
+  };
+  // 逐表明细（用于管理员面板展示，让"全部数据"一目了然）。
+  const tables = {
+    entries: table("报名记录", entries, ENTRY_ROW_BYTES),
+    logs: table("审计日志", logs, LOG_ROW_BYTES),
+    archives: table("历史归档", archives, ARCHIVE_ROW_BYTES),
+    devices: table("设备令牌", devices, DEVICE_ROW_BYTES),
+    sessions: table("管理员会话", sessions, SESSION_ROW_BYTES),
+    loginAttempts: table("登录尝试", loginAttempts, LOGIN_ROW_BYTES),
+    rateLimits: table("限流记录", rateLimits, RATE_ROW_BYTES),
+    clans: table("部落配置", clans, CLAN_ROW_BYTES),
+    settings: table("系统设置", settings, SETTINGS_ROW_BYTES)
+  };
+  let bytes = BASE_DB_BYTES;
+  const counts = {};
+  for (const key of Object.keys(tables)) {
+    bytes += tables[key].bytes;
+    counts[key] = tables[key].count;
+  }
+  return { bytes, counts, tables };
+}
+
+async function storageLimitBytes(db, env) {
+  const envValue = Number.parseInt(env && env.STORAGE_LIMIT_BYTES, 10);
+  if (Number.isInteger(envValue) && envValue > 0) return envValue;
+  const row = await first(db, "SELECT value FROM settings WHERE key = 'storageLimitBytes'");
+  const stored = Number.parseInt(row && row.value, 10);
+  if (Number.isInteger(stored) && stored > 0) return stored;
+  return DEFAULT_STORAGE_LIMIT_BYTES;
+}
+
+// 异常/风险告警，用于在管理员面板里提醒（这就是「通知管理员」的落点）。
+function buildStorageAlerts(stats) {
+  const alerts = [];
+  const percent = Math.round(stats.percent * 100);
+  if (stats.percent >= 0.8) {
+    alerts.push({ level: "critical", message: `存储使用率已达 ${percent}%，接近服务器额度上限，请尽快清理或扩容。` });
+  } else if (stats.percent > STORAGE_PRUNE_TRIGGER) {
+    alerts.push({ level: "warn", message: `存储使用率 ${percent}% 已超过 ${Math.round(STORAGE_PRUNE_TRIGGER * 100)}%，系统会自动清理超期的最旧记录。` });
+  }
+  if (stats.counts.entries24h >= ALERT_ENTRIES_24H) {
+    alerts.push({ level: "warn", message: `最近 24 小时新增报名 ${stats.counts.entries24h} 条，疑似异常批量提交，请留意。` });
+  }
+  if (stats.counts.logs24h >= ALERT_LOGS_24H) {
+    alerts.push({ level: "warn", message: `最近 24 小时新增日志 ${stats.counts.logs24h} 条，疑似异常刷量，请留意。` });
+  }
+  if (stats.counts.logs >= ALERT_LOG_ROWS) {
+    alerts.push({ level: "warn", message: `审计日志累计已达 ${stats.counts.logs} 条，增长较快，建议留意。` });
+  }
+  return alerts;
+}
+
+async function readLastPrune(db) {
+  const row = await first(db, "SELECT value FROM settings WHERE key = 'lastStoragePrune'");
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    return null;
+  }
+}
+
+async function storageStats(db, env) {
+  const usage = await estimateUsageBytes(db);
+  const limit = await storageLimitBytes(db, env);
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const cut = Date.now() - RECORD_PROTECT_MS;
+  const [protectedRow, oldestRow, recentEntries, recentLogs, lastPrune] = await Promise.all([
+    first(db, "SELECT COUNT(*) AS n FROM entries WHERE created_at >= ?", cut),
+    first(db, "SELECT MIN(created_at) AS t FROM entries"),
+    first(db, "SELECT COUNT(*) AS n FROM entries WHERE created_at >= ?", dayAgo),
+    first(db, "SELECT COUNT(*) AS n FROM logs WHERE time >= ?", dayAgo),
+    readLastPrune(db)
+  ]);
+  const stats = {
+    usedBytes: usage.bytes,
+    limitBytes: limit,
+    percent: limit > 0 ? Math.min(1, usage.bytes / limit) : 0,
+    counts: {
+      ...usage.counts,
+      entries24h: num(recentEntries && recentEntries.n),
+      logs24h: num(recentLogs && recentLogs.n)
+    },
+    // 逐表明细（表名 → 条数/占用字节），供管理端展示"全部数据"分布。
+    tables: usage.tables,
+    protectedEntries: num(protectedRow && protectedRow.n),
+    oldestEntryAt: num(oldestRow && oldestRow.t) || null,
+    pruneTriggerPercent: STORAGE_PRUNE_TRIGGER,
+    protectDays: Math.round(RECORD_PROTECT_MS / (24 * 60 * 60 * 1000)),
+    protectedSince: cut,
+    lastPrune
+  };
+  stats.alerts = buildStorageAlerts(stats);
+  return stats;
+}
+
+// 容量治理核心：使用率 > 50% 时，从最旧的自愿清理记录开始删，直到回落到 45% 以下。
+// 硬约束：3 个月内的记录永不删除；先删报名、再删超期日志；删多少、最早删到何时都会回报。
+async function pruneStorage(db, env) {
+  const limit = await storageLimitBytes(db, env);
+  const before = await estimateUsageBytes(db);
+  const trigger = limit * STORAGE_PRUNE_TRIGGER;
+  const target = limit * STORAGE_PRUNE_TARGET;
+  const cutoff = Date.now() - RECORD_PROTECT_MS;
+  const report = {
+    triggered: false,
+    finishedAt: Date.now(),
+    limitBytes: limit,
+    beforeBytes: before.bytes,
+    afterBytes: before.bytes,
+    deletedEntries: 0,
+    deletedLogs: 0,
+    oldestDeletedAt: null,
+    protectedEntries: 0,
+    reachedTarget: false
+  };
+  if (before.bytes <= trigger) return report;
+  report.triggered = true;
+
+  let current = before.bytes;
+
+  // 1) 先清理超过保护期（3 个月）的最旧报名记录。
+  for (let guard = 0; guard < 500 && current > target; guard += 1) {
+    const rows = await all(
+      db,
+      `SELECT id, created_at,
+        LENGTH(COALESCE(id,'')) + LENGTH(COALESCE(clan_id,'')) + LENGTH(COALESCE(role,''))
+        + LENGTH(COALESCE(name,'')) + LENGTH(COALESCE(owner_token,'')) + ${ENTRY_ROW_BYTES} AS bytes
+       FROM entries WHERE created_at < ? ORDER BY created_at ASC, id ASC LIMIT 200`,
+      cutoff
+    );
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id);
+    await stmt(db, "DELETE FROM entries WHERE id IN (SELECT value FROM json_each(?))", JSON.stringify(ids)).run();
+    for (const row of rows) {
+      report.deletedEntries += 1;
+      report.oldestDeletedAt = row.created_at;
+      current -= num(row.bytes);
+    }
+  }
+
+  // 2) 仍高于目标，再清理超过保护期的最旧审计日志。
+  for (let guard = 0; guard < 500 && current > target; guard += 1) {
+    const rows = await all(
+      db,
+      `SELECT id,
+        LENGTH(COALESCE(type,'')) + LENGTH(COALESCE(clan,'')) + LENGTH(COALESCE(details,''))
+        + LENGTH(COALESCE(operator,'')) + LENGTH(COALESCE(token,'')) + ${LOG_ROW_BYTES} AS bytes
+       FROM logs WHERE time < ? ORDER BY id ASC LIMIT 300`,
+      cutoff
+    );
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id);
+    await stmt(db, "DELETE FROM logs WHERE id IN (SELECT value FROM json_each(?))", JSON.stringify(ids)).run();
+    for (const row of rows) {
+      report.deletedLogs += 1;
+      current -= num(row.bytes);
+    }
+  }
+
+  report.afterBytes = Math.max(0, current);
+  report.reachedTarget = current <= target;
+  const protectedRow = await first(db, "SELECT COUNT(*) AS n FROM entries WHERE created_at >= ?", cutoff);
+  report.protectedEntries = num(protectedRow && protectedRow.n);
+  report.finishedAt = Date.now();
+
+  if (report.deletedEntries || report.deletedLogs) {
+    const oldest = report.oldestDeletedAt
+      ? new Date(report.oldestDeletedAt).toLocaleString("zh-CN", { hour12: false })
+      : "无";
+    await stmt(
+      db,
+      "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'REMOVE', '系统维护', ?, '系统', '容量治理')",
+      Date.now(),
+      `容量超过 ${Math.round(STORAGE_PRUNE_TRIGGER * 100)}%，自动清理：报名 ${report.deletedEntries} 条、日志 ${report.deletedLogs} 条（最早至 ${oldest}）；3 个月内记录已保留`
+    ).run();
+  }
+  await stmt(
+    db,
+    "INSERT INTO settings(key, value) VALUES('lastStoragePrune', ?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    JSON.stringify(report)
+  ).run();
+  return report;
+}
+
+// 清理过期/无用的临时行，避免长期运行后这类表无界增长：
+//  - 已过期的管理员会话（令牌失效机制，过期即失效即删）
+//  - 早已超出窗口的登录尝试、限流计数
+// 这些数据「过期即无用」，删除不影响任何正常功能；表不存在（迁移未执行）时自动跳过。
+async function cleanupTransient(db) {
+  const now = Date.now();
+  const removed = { sessions: 0, rateLimits: 0, loginAttempts: 0 };
+  const tasks = [
+    ["sessions", "DELETE FROM sessions WHERE expires_at < ?", [now]],
+    ["rateLimits", "DELETE FROM rate_limits WHERE window_start < ?", [now - 24 * 60 * 60 * 1000]],
+    ["loginAttempts", "DELETE FROM login_attempts WHERE window_start < ?", [now - LOGIN_WINDOW_MS * 4]]
+  ];
+  for (const [key, sql, values] of tasks) {
+    try {
+      const result = await stmt(db, sql, ...values).run();
+      removed[key] = num(result && result.meta && result.meta.changes);
+    } catch (error) {
+      // 迁移未执行 / 表不存在时忽略，不影响主流程。
+    }
+  }
+  return removed;
+}
+
+// 由 Cron 定时触发 / 管理员手动触发。
+export async function runMaintenance(env) {
+  const db = env && env.DB;
+  if (!db) return null;
+  try {
+    const prune = await pruneStorage(db, env);
+    const cleaned = await cleanupTransient(db);
+    return { prune, cleaned };
+  } catch (error) {
+    console.error("Storage maintenance failed:", { message: error && error.message, stack: error && error.stack });
+    return null;
+  }
 }
 
 async function adminToken(request, db) {
@@ -417,7 +783,13 @@ async function handle(request, env) {
 
   if (path === "/api/device") {
     if (method !== "POST") return json({ error: "method" }, 405);
-    return json({ deviceToken: `#U-${randomHex(8).toUpperCase()}` });
+    const rate = await checkRateLimit(db, request, "device", DEVICE_RATE_LIMIT, DEVICE_RATE_WINDOW_MS);
+    if (rate.exceeded) return json({ error: "请求过于频繁，请稍后再试" }, 429);
+    const token = `#U-${randomHex(8).toUpperCase()}`;
+    // 记录签发过的令牌，报名/修改时据此校验，杜绝伪造令牌制造垃圾数据。
+    try { await registerDeviceToken(db, token); }
+    catch (error) { console.warn("registerDeviceToken failed:", error && error.message); }
+    return json({ deviceToken: token });
   }
 
   if (path === "/api/admin/setup/status") {
@@ -489,6 +861,40 @@ async function handle(request, env) {
     });
   }
 
+  // 管理员「存储容量」面板：查看实时用量、服务器额度、告警与上次清理结果。
+  if (path === "/api/admin/storage") {
+    const token = await adminToken(request, db);
+    if (!token) return json({ error: "需要管理员权限" }, 403);
+    if (method === "GET") return json(await storageStats(db, env));
+    if (method === "PUT") {
+      // 允许管理员把额度改成「服务器实际给的容量」（MB）。
+      const body = await readJson(request);
+      const mb = Number.parseFloat(body.limitMB);
+      if (!Number.isFinite(mb) || mb < 1 || mb > 102400) {
+        return json({ error: "容量上限需为 1 至 102400 之间的数字（MB）" }, 400);
+      }
+      const bytes = Math.round(mb * 1024 * 1024);
+      await stmt(
+        db,
+        "INSERT INTO settings(key, value) VALUES('storageLimitBytes', ?) " +
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        String(bytes)
+      ).run();
+      return json({ ok: true, limitBytes: bytes });
+    }
+    return json({ error: "method" }, 405);
+  }
+
+  // 管理员手动触发一次容量清理，返回本次清理报告。
+  if (path === "/api/admin/storage/prune") {
+    if (method !== "POST") return json({ error: "method" }, 405);
+    const token = await adminToken(request, db);
+    if (!token) return json({ error: "需要管理员权限" }, 403);
+    const cleaned = await cleanupTransient(db);
+    const report = await pruneStorage(db, env);
+    return json({ ok: true, report, cleaned, stats: await storageStats(db, env) });
+  }
+
   if (path === "/api/state") {
     if (method !== "GET") return json({ error: "method" }, 405);
     const currentRev = Number.parseInt((await first(db, "SELECT value FROM settings WHERE key = 'rev'"))?.value || "0", 10);
@@ -501,7 +907,10 @@ async function handle(request, env) {
 
   if (path === "/api/signup") {
     if (method !== "POST") return json({ error: "method" }, 405);
-    const actor = deviceToken(request);
+    const rate = await checkRateLimit(db, request, "signup", SIGNUP_RATE_LIMIT, SIGNUP_RATE_WINDOW_MS);
+    if (rate.exceeded) return json({ error: "提交过于频繁，请稍后再试" }, 429);
+    // 只接受服务端签发过（或迁移前已绑定过报名）的设备令牌。
+    const actor = await validDeviceToken(db, request);
     if (!actor) return json({ error: "缺少或非法的设备令牌" }, 400);
     const body = await readJson(request);
     const clanId = String(body.clanId || "");
@@ -547,7 +956,8 @@ async function handle(request, env) {
     const clan = await first(db, "SELECT * FROM clans WHERE id = ?", entry.clan_id);
     if (!clan) return json({ error: "部落不存在" }, 404);
     const admin = await adminToken(request, db);
-    const device = deviceToken(request);
+    // 归属判定同样要求令牌是服务端签发过的，伪造令牌无法认领/篡改报名。
+    const device = await validDeviceToken(db, request);
 
     if (isMove) {
       if (method !== "POST") return json({ error: "method" }, 405);
