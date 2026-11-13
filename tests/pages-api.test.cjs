@@ -216,6 +216,42 @@ test("Pages API seeds data, enforces ownership and capacity, and archives reset"
   assert.equal(response.status, 404);
 });
 
+test("full state refresh returns owner tokens even when the revision is unchanged", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "full-state-test-password" };
+  const deviceToken = (await readJson(await runApi(onRequest, env, "/api/device", {
+    method: "POST"
+  }))).deviceToken;
+  const signupResponse = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": deviceToken },
+    body: JSON.stringify({ clanId: "xiyang", name: "Full State User", role: "sub", th: "" })
+  });
+  assert.equal(signupResponse.status, 200);
+  const { entryId } = await readJson(signupResponse);
+
+  const publicState = await readJson(await runApi(onRequest, env, "/api/state"));
+  const loginResponse = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: env.ADMIN_PASSWORD })
+  });
+  const { adminToken } = await readJson(loginResponse);
+  const adminHeaders = { authorization: `Bearer ${adminToken}` };
+
+  const staleResponse = await readJson(await runApi(
+    onRequest, env, `/api/state?rev=${publicState.rev}`, { headers: adminHeaders }
+  ));
+  assert.equal(staleResponse.unchanged, true);
+
+  const fullState = await readJson(await runApi(
+    onRequest, env, `/api/state?full=1&rev=${publicState.rev}`, { headers: adminHeaders }
+  ));
+  const entry = fullState.clans.find(clan => clan.id === "xiyang")
+    .subs.find(item => item.id === entryId);
+  assert.equal(entry.ownerToken, deviceToken);
+});
+
 test("one-time admin setup stores a hash, consumes its code, and enables login", async () => {
   const { onRequest } = await import(workerUrl);
   const env = { DB: new TestD1() };
@@ -276,19 +312,27 @@ test("one-time admin setup stores a hash, consumes its code, and enables login",
   assert.equal(response.status, 409);
 });
 
-test("first-run bootstrap lets an admin set a password with no token", async () => {
+test("first-run admin setup fails closed until a one-time token is configured", async () => {
   const { onRequest } = await import(workerUrl);
   const env = { DB: new TestD1() };
+  const setupCode = "d".repeat(64);
   const password = "bootstrap-password-2026";
 
   let response = await runApi(onRequest, env, "/api/admin/setup/status");
-  assert.deepEqual(await readJson(response), { available: true, tokenRequired: false });
+  assert.deepEqual(await readJson(response), { available: true, tokenRequired: true });
 
-  // No token provided on purpose — first-run bootstrap must accept it.
   response = await runApi(onRequest, env, "/api/admin/setup", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.40" },
     body: JSON.stringify({ password })
+  });
+  assert.equal(response.status, 503);
+
+  env.ADMIN_SETUP_TOKEN = setupCode;
+  response = await runApi(onRequest, env, "/api/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.40" },
+    body: JSON.stringify({ token: setupCode, password })
   });
   assert.equal(response.status, 200);
   assert.ok((await readJson(response)).adminToken);
@@ -350,7 +394,8 @@ test("ADMIN_PASSWORD takes priority over a stale stored password hash", async ()
     body: JSON.stringify({ password: "env-secret-password" })
   });
   assert.equal(response.status, 200);
-  assert.ok((await readJson(response)).adminToken);
+  const { adminToken } = await readJson(response);
+  assert.ok(adminToken);
 
   response = await runApi(onRequest, env, "/api/admin/login", {
     method: "POST",
@@ -358,38 +403,46 @@ test("ADMIN_PASSWORD takes priority over a stale stored password hash", async ()
     body: JSON.stringify({ password: "some-other-password" })
   });
   assert.equal(response.status, 401);
+
+  response = await runApi(onRequest, env, "/api/admin/password", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      oldPassword: env.ADMIN_PASSWORD,
+      newPassword: "replacement-secret-password"
+    })
+  });
+  assert.equal(response.status, 409);
+  assert.match((await readJson(response)).error, /ADMIN_PASSWORD Secret/);
 });
 
-test("default admin password XXXX works when nothing is configured", async () => {
+test("no default admin password works when nothing is configured", async () => {
   const { onRequest } = await import(workerUrl);
   const env = { DB: new TestD1() };
 
-  let response = await runApi(onRequest, env, "/api/admin/login", {
+  const response = await runApi(onRequest, env, "/api/admin/login", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.60" },
     body: JSON.stringify({ password: "XXXX" })
   });
-  assert.equal(response.status, 200);
-  assert.ok((await readJson(response)).adminToken);
-
-  response = await runApi(onRequest, env, "/api/admin/login", {
-    method: "POST",
-    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.60" },
-    body: JSON.stringify({ password: "wrong-password" })
-  });
   assert.equal(response.status, 401);
+  assert.deepEqual(
+    await readJson(await runApi(onRequest, env, "/api/admin/setup/status")),
+    { available: true, tokenRequired: true }
+  );
 });
 
 test("admin can change the password via PUT /api/admin/password", async () => {
   const { onRequest } = await import(workerUrl);
-  const env = { DB: new TestD1() };
+  const setupCode = "e".repeat(64);
+  const env = { DB: new TestD1(), ADMIN_SETUP_TOKEN: setupCode };
+  const oldPassword = "initial-safe-password-2026";
   const newPassword = "my-new-strong-password-2026";
 
-  // Login with the default password first.
-  let response = await runApi(onRequest, env, "/api/admin/login", {
+  let response = await runApi(onRequest, env, "/api/admin/setup", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.70" },
-    body: JSON.stringify({ password: "XXXX" })
+    body: JSON.stringify({ token: setupCode, password: oldPassword })
   });
   assert.equal(response.status, 200);
   const { adminToken } = await readJson(response);
@@ -407,7 +460,7 @@ test("admin can change the password via PUT /api/admin/password", async () => {
   response = await runApi(onRequest, env, "/api/admin/password", {
     method: "PUT",
     headers: adminHeaders,
-    body: JSON.stringify({ oldPassword: "XXXX", newPassword: "short" })
+    body: JSON.stringify({ oldPassword, newPassword: "short" })
   });
   assert.equal(response.status, 400);
 
@@ -415,15 +468,15 @@ test("admin can change the password via PUT /api/admin/password", async () => {
   response = await runApi(onRequest, env, "/api/admin/password", {
     method: "PUT",
     headers: adminHeaders,
-    body: JSON.stringify({ oldPassword: "XXXX", newPassword })
+    body: JSON.stringify({ oldPassword, newPassword })
   });
   assert.equal(response.status, 200);
 
-  // Old default password no longer works.
+  // The old password no longer works.
   response = await runApi(onRequest, env, "/api/admin/login", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.70" },
-    body: JSON.stringify({ password: "XXXX" })
+    body: JSON.stringify({ password: oldPassword })
   });
   assert.equal(response.status, 401);
 

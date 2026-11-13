@@ -1,6 +1,6 @@
 # COC CWL 报名系统
 
-使用 Cloudflare Workers Static Assets + Worker Modules + D1。页面和报名 API 共用一个 `workers.dev` 链接；D1 在服务端持久保存报名数据，不需要付费持久磁盘。
+使用 Cloudflare Workers Static Assets + Worker Modules + D1。页面和报名 API 共用一个 `workers.dev` 链接；D1 在服务端持久保存报名数据，不需要付费持久磁盘。Tailwind CSS 与 Font Awesome 在构建时打包为本站静态资源，不依赖第三方 CDN。
 
 ## Workers Git 部署
 
@@ -9,7 +9,7 @@
 3. 进入 **Workers & Pages → Create application → Connect to Git**，选择本仓库和要部署的分支，使用 Workers Builds（不是 Pages）。
 4. 构建设置使用 `npm run build`，部署命令使用 `npx wrangler deploy`。预览构建也使用 `npm run build`；仓库中的 `wrangler.jsonc` 会提供 Worker 入口、静态资源和 D1 绑定配置，输出目录为 `dist`。
 5. D1 绑定由 `wrangler.jsonc` 的 `d1_databases` 统一声明（绑定名 `DB`、数据库名 `coc-cwl-signup`）。部署前请把其中的 `database_id` 改成第 1 步新建数据库显示的 ID；`npx wrangler deploy` 会自动带上该绑定，**无需**在 Dashboard 的 **Settings → Bindings** 再手动添加。
-6. 在 **Settings → Variables and Secrets** 添加 Secret `ADMIN_PASSWORD`，设置强管理员密码。该 Secret 优先于数据库中的旧密码哈希，配置后即可用它登录管理员。
+6. 在 **Settings → Variables and Secrets** 添加 Secret `ADMIN_PASSWORD`，设置强管理员密码。该 Secret 优先于数据库中的旧密码哈希，配置后即可用它登录管理员。代码不再包含默认管理员密码；务必在分享网站前配置此 Secret。若使用 Secret，改密需在 Cloudflare 控制台更新 Secret。首次初始化若不设置 `ADMIN_PASSWORD`，必须先设置一次性 `ADMIN_SETUP_TOKEN` Secret；没有它时公开初始化接口会拒绝设置密码。
 7. 打开 Cloudflare 提供的 `https://<项目名>.<子域名>.workers.dev`，这是分享给群友的报名链接。
 
 不要重复执行初始化 SQL，否则会因主键重复而报错。
@@ -35,7 +35,9 @@ Cloudflare 免费 D1 单库上限为 500 MB，足够当前名单规模；免费�
 或用 Secret / 变量 `STORAGE_LIMIT_BYTES` 覆盖（单位：字节）。
 
 
-本地预览可执行 `npm run preview`。未配置本地 D1 时只能确认静态页面；API smoke 需先在 Wrangler 本地配置 D1 绑定。`npm run build` 只将 `index.html` 复制到 `dist`，作为唯一公开的静态资源。
+本地预览可执行 `npm run preview`。未配置本地 D1 时只能确认静态页面；API smoke 需先在 Wrangler 本地配置 D1 绑定。`npm run build` 会编译 Tailwind 并把 Font Awesome CSS/字体复制到 `dist`，部署不再依赖外部样式 CDN。
+
+Docker 首次部署必须在 `.env` 或环境中提供强 `ADMIN_PASSWORD`，不再提供默认密码。Cloudflare 自定义域名需在你的 Cloudflare 账号中绑定并配置 DNS；代码仓库无法替代账号权限完成此步骤。
 
 ## 重要
 
