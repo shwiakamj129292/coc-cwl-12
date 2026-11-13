@@ -526,6 +526,11 @@
             try { localStorage.setItem(DEVICE_TOKEN_KEY, deviceToken); } catch(e) {}
             return deviceToken;
         }
+        async function renewDeviceToken() {
+            deviceToken = '';
+            try { localStorage.removeItem(DEVICE_TOKEN_KEY); } catch(e) {}
+            return ensureDeviceToken();
+        }
 
         // 校验已保存的管理端令牌是否仍然有效
         async function checkAdminSession() {
@@ -1158,7 +1163,7 @@
                             </div>
                             <div class="text-slate-200 font-medium">部落：<span class="text-amber-300">${escapeHtml(log.clan)}</span> | 详情：${escapeHtml(log.details)}</div>
                             <div class="text-[11px] text-slate-400 flex justify-between items-center pt-1 border-t border-slate-700/40">
-                                <span>操作设备符号：<strong class="font-mono text-emerald-400">${escapeHtml(log.token || '未知')}</strong></span>
+                                <span>操作设备符号：<strong class="font-mono text-emerald-400">${log.token === '#ADMIN' ? '管理员操作（会话凭证已脱敏）' : escapeHtml(log.token || '未知')}</strong></span>
                                 <span>操作人：<strong class="text-sky-400">${escapeHtml(log.operator)}</strong></span>
                             </div>
                         </div>
@@ -1485,12 +1490,22 @@
                 const clan = clans[clanIndex];
 
                 try {
-                    await api('/api/signup', { method: 'POST', device: true, body: { clanId: clan.id, role, th, name } });
+                    const submit = () => api('/api/signup', {
+                        method: 'POST', device: true, body: { clanId: clan.id, role, th, name }
+                    });
+                    try {
+                        await submit();
+                    } catch (err) {
+                        if (err.status !== 403 || err.data?.error !== 'invalid_device_token') throw err;
+                        await renewDeviceToken();
+                        await submit();
+                    }
                     closeModal();
                     await fetchState(true);
                     alert(`报名成功！「${entry}」已绑定至你的认证符号（${deviceToken}），仅你本人可修改。`);
                 } catch (err) {
-                    if (err.status === 409) alert('该部落正选名额已满，请切换为「替补席位」后重试。');
+                    if (err.status === 409 && err.data?.error === 'sub_full') alert('替补席位已满，请联系管理员。');
+                    else if (err.status === 409) alert('该部落正选名额已满，请切换为「替补席位」后重试。');
                     else alert('报名失败：' + (err.data && err.data.error || err.message || '未知错误'));
                 }
             } finally {
@@ -1505,9 +1520,9 @@
             const targetObj = list.find(item => item.id === entryId);
             if (!targetObj) return;
 
-            // 严格鉴权：非管理员、非本人绑定账号、且非可认领的预设历史名单 -> 拦截
-            if (!isManager && targetObj.ownerToken !== deviceToken && targetObj.ownerToken !== '#SYS_PRESET') {
-                alert('⚠️ 权限拒绝：该报名账号未绑定你的认证符号，你只能修改自己报名的账号！');
+            // 预置名单只允许管理员维护；普通用户只能修改自己绑定的账号。
+            if (!isManager && targetObj.ownerToken !== deviceToken) {
+                alert('⚠️ 权限拒绝：预置名单仅管理员可维护，你只能修改自己报名的账号。');
                 return;
             }
 
@@ -1517,10 +1532,10 @@
             document.getElementById('edit-my-role').value = role;
 
             const badgeBox = document.getElementById('edit-owner-badge-box');
-            if (isManager && targetObj.ownerToken !== deviceToken) {
+            if (isManager && targetObj.ownerToken === '#SYS_PRESET') {
+                badgeBox.innerHTML = '<i class="fa-solid fa-user-shield mr-1"></i> 管理员维护：系统预置名单仅管理员可修改';
+            } else if (isManager && targetObj.ownerToken !== deviceToken) {
                 badgeBox.innerHTML = `<i class="fa-solid fa-user-shield mr-1"></i> 管理员越权维护：正在修改归属于 <strong>${escapeHtml(targetObj.ownerToken)}</strong> 的报名`;
-            } else if (targetObj.ownerToken === '#SYS_PRESET') {
-                badgeBox.innerHTML = `<i class="fa-solid fa-hand-sparkles mr-1"></i> 该账号为历史预设名单，保存后将认领至你的认证符号（${deviceToken}）`;
             } else {
                 badgeBox.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> 认证通过（${deviceToken}）：正在修改你绑定的报名账号`;
             }
@@ -1595,7 +1610,7 @@
                 await api('/api/entries/' + encodeURIComponent(entryId) + '/move', { method: 'POST', auth: true, body: { direction } });
                 await fetchState(true);
             } catch (err) {
-                alert('操作失败：' + (err.data && err.data.error || err.message));
+                alert('操作失败：' + (err.data && (err.data.message || err.data.error) || err.message));
             }
         }
 

@@ -10,6 +10,8 @@ const PASSWORD_HASH_ITERATIONS = 10000;
 const MIN_PASSWORD_HASH_ITERATIONS = 1000;
 const MAX_PASSWORD_HASH_ITERATIONS = 1000000;
 const MAX_BODY = 64 * 1024;
+const MAX_SUBS_PER_CLAN = 30;
+const ADMIN_LOG_TOKEN = "#ADMIN";
 const ALLOWED_TH = new Set(["", "19本", "18本", "17本", "16本", "15本及以下"]);
 const VALID_COLORS = new Set([
   "rose", "orange", "amber", "emerald", "cyan",
@@ -207,10 +209,9 @@ async function registerDeviceToken(db, token) {
 // 校验设备令牌是否由本服务端签发过：
 //  1) 命中 device_tokens 登记表 → 通过；
 //  2) 兼容迁移前签发、尚未登记但已绑定过报名记录的老令牌 → 通过并补登记；
-//  3) 格式正确（#U-[A-Z0-9]{4,32}）的令牌首次见到 → 自动登记并通过
-//     （保证迁移前已存于用户浏览器 localStorage 的旧令牌不失效，不影响正常报名）；
-//  4) 格式不正确的 → 拒绝（这是真正能挡住的伪造/垃圾令牌）。
-// 若 0002 迁移尚未执行（表不存在），则优雅退回为「仅格式校验」，避免影响线上正常用户。
+//  3) 未登记且未绑定历史报名的令牌 → 拒绝，避免任意自造令牌通过校验。
+// 若 0002 迁移尚未执行（表不存在），则优雅退回为「仅格式校验」；
+// 因此部署时仍必须执行迁移，才能启用完整令牌校验。
 async function validDeviceToken(db, request) {
   const token = deviceToken(request);
   if (!token) return null;
@@ -225,10 +226,7 @@ async function validDeviceToken(db, request) {
       await registerDeviceToken(db, token);
       return token;
     }
-    // 首次见到的格式正确令牌：自动登记放行，避免迁移前签发的旧令牌失效。
-    // （真正的伪造令牌如果连格式都不对，会被 deviceToken() 在最前面过滤掉。）
-    await registerDeviceToken(db, token);
-    return token;
+    return null;
   } catch (error) {
     console.warn("device_tokens unavailable, falling back to format-only check:", error && error.message);
     return token;
@@ -688,8 +686,10 @@ async function buildState(db, request) {
 
   function presentEntry(entry) {
     const value = { id: entry.id, text: entry.name };
-    if (token || entry.owner_token === "#SYS_PRESET" || (device && entry.owner_token === device)) {
-      value.ownerToken = token ? entry.owner_token : entry.owner_token === "#SYS_PRESET" ? "#SYS_PRESET" : device;
+    if (token) {
+      value.ownerToken = entry.owner_token;
+    } else if (device && entry.owner_token === device) {
+      value.ownerToken = device;
     }
     return value;
   }
@@ -901,8 +901,10 @@ async function handle(request, env) {
     const rate = await checkRateLimit(db, request, "signup", SIGNUP_RATE_LIMIT, SIGNUP_RATE_WINDOW_MS);
     if (rate.exceeded) return json({ error: "提交过于频繁，请稍后再试" }, 429);
     // 只接受服务端签发过（或迁移前已绑定过报名）的设备令牌。
+    const candidateDevice = deviceToken(request);
+    if (!candidateDevice) return json({ error: "missing_device_token", message: "缺少或非法的设备令牌" }, 400);
     const actor = await validDeviceToken(db, request);
-    if (!actor) return json({ error: "缺少或非法的设备令牌" }, 400);
+    if (!actor) return json({ error: "invalid_device_token", message: "设备令牌已失效，请重新获取后重试" }, 403);
     const body = await readJson(request);
     const clanId = String(body.clanId || "");
     const clan = await first(db, "SELECT id, name, capacity FROM clans WHERE id = ?", clanId);
@@ -919,10 +921,13 @@ async function handle(request, env) {
         db,
         `INSERT INTO entries(id, clan_id, role, name, owner_token, created_at)
          SELECT ?, ?, ?, ?, ?, ?
-         WHERE ? = 'sub' OR
+         WHERE (? = 'main' AND
            (SELECT COUNT(*) FROM entries WHERE clan_id = ? AND role = 'main') <
-           (SELECT capacity FROM clans WHERE id = ?)`,
-        entryId, clan.id, role, text, actor, now, role, clan.id, clan.id
+           (SELECT capacity FROM clans WHERE id = ?))
+           OR (? = 'sub' AND
+           (SELECT COUNT(*) FROM entries WHERE clan_id = ? AND role = 'sub') < ?)`,
+        entryId, clan.id, role, text, actor, now,
+        role, clan.id, clan.id, role, clan.id, MAX_SUBS_PER_CLAN
       ),
       stmt(
         db,
@@ -933,7 +938,9 @@ async function handle(request, env) {
       revStatement(db)
     ]);
     if (!(results[0]?.meta?.changes > 0)) {
-      return json({ error: "full", message: "正选名额已满，请改报替补" }, 409);
+      return role === "sub"
+        ? json({ error: "sub_full", message: "替补席位已满，请联系管理员" }, 409)
+        : json({ error: "full", message: "正选名额已满，请改报替补" }, 409);
     }
     return json({ ok: true, entryId });
   }
@@ -948,7 +955,10 @@ async function handle(request, env) {
     if (!clan) return json({ error: "部落不存在" }, 404);
     const admin = await adminToken(request, db);
     // 归属判定同样要求令牌是服务端签发过的，伪造令牌无法认领/篡改报名。
-    const device = await validDeviceToken(db, request);
+    const candidateDevice = deviceToken(request);
+    const device = !admin && candidateDevice === entry.owner_token
+      ? await validDeviceToken(db, request)
+      : null;
 
     if (isMove) {
       if (method !== "POST") return json({ error: "method" }, 405);
@@ -959,13 +969,18 @@ async function handle(request, env) {
       const results = await batch(db, [
         stmt(
           db,
-          `UPDATE entries SET role = ? WHERE id = ? AND
-             (? = 'sub' OR role = 'main' OR
-              (SELECT COUNT(*) FROM entries WHERE clan_id = ? AND role = 'main') <
-              (SELECT capacity FROM clans WHERE id = ?))`,
-          nextRole, entryId, nextRole, entry.clan_id, entry.clan_id
+          `UPDATE entries SET role = ? WHERE id = ? AND (
+             role = ? OR
+             (? = 'main' AND
+               (SELECT COUNT(*) FROM entries WHERE clan_id = ? AND role = 'main') <
+               (SELECT capacity FROM clans WHERE id = ?)) OR
+             (? = 'sub' AND
+               (SELECT COUNT(*) FROM entries WHERE clan_id = ? AND role = 'sub') < ?)
+          )`,
+          nextRole, entryId, nextRole, nextRole, entry.clan_id, entry.clan_id,
+          nextRole, entry.clan_id, MAX_SUBS_PER_CLAN
         ),
-        logStatement(db, "EDIT", clan.name, `${toSub ? "转为替补" : "升为正选"}：${entry.name}`, "管理员", admin),
+        logStatement(db, "EDIT", clan.name, `${toSub ? "转为替补" : "升为正选"}：${entry.name}`, "管理员", ADMIN_LOG_TOKEN),
         revStatement(db)
       ]);
       if (!(results[0]?.meta?.changes > 0)) {
@@ -979,14 +994,23 @@ async function handle(request, env) {
         if (!toSub && current.role !== "main" && count.n >= clan.capacity) {
           return json({ error: "正选已满，无法升为正选" }, 409);
         }
+        if (toSub && current.role !== "sub") {
+          const subCount = await first(
+            db,
+            "SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'sub'",
+            entry.clan_id
+          );
+          if (subCount.n >= MAX_SUBS_PER_CLAN) {
+            return json({ error: "sub_full", message: "替补席位已满，请联系管理员" }, 409);
+          }
+        }
         return json({ error: "报名不存在" }, 404);
       }
       return json({ ok: true });
     }
 
     const isOwner = !!device && entry.owner_token === device;
-    const canClaim = !admin && !!device && entry.owner_token === "#SYS_PRESET";
-    if (!admin && !isOwner && !canClaim) return json({ error: "无权操作该报名" }, 403);
+    if (!admin && !isOwner) return json({ error: "无权操作该报名" }, 403);
 
     if (method === "PATCH") {
       const body = await readJson(request);
@@ -994,18 +1018,13 @@ async function handle(request, env) {
       const name = String(body.name || "").trim().slice(0, 40);
       if (!name) return json({ error: "昵称不能为空" }, 400);
       const newText = body.th && th ? `${name} ${th}` : name;
-      const where = admin
-        ? "id = ?"
-        : canClaim
-          ? "id = ? AND owner_token = '#SYS_PRESET'"
-          : "id = ? AND owner_token = ?";
+      const where = admin ? "id = ?" : "id = ? AND owner_token = ?";
       const result = await saveChange(
         db,
         stmt(db, `UPDATE entries SET name = ?, owner_token = ? WHERE ${where}`, ...(
-          admin ? [newText, entry.owner_token, entryId] :
-            canClaim ? [newText, device, entryId] : [newText, entry.owner_token, entryId, device]
+          admin ? [newText, entry.owner_token, entryId] : [newText, entry.owner_token, entryId, device]
         )),
-        logStatement(db, "EDIT", clan.name, `修改报名：${entry.name} ➔ ${newText}`, name, admin || device)
+        logStatement(db, "EDIT", clan.name, `修改报名：${entry.name} ➔ ${newText}`, admin ? "管理员" : name, admin ? ADMIN_LOG_TOKEN : device)
       );
       if (!result) {
         return json({ error: "无权操作该报名" }, 403);
@@ -1014,12 +1033,8 @@ async function handle(request, env) {
     }
 
     if (method === "DELETE") {
-      const condition = admin
-        ? "id = ?"
-        : canClaim
-          ? "id = ? AND owner_token = '#SYS_PRESET'"
-          : "id = ? AND owner_token = ?";
-      const args = admin ? [entryId] : canClaim ? [entryId] : [entryId, device];
+      const condition = admin ? "id = ?" : "id = ? AND owner_token = ?";
+      const args = admin ? [entryId] : [entryId, device];
       // 删除报名时，日志里始终记录「该报名本人的设备码」而不是管理员令牌，
       // 这样即便管理员替他退赛，这个人的设备码与历史报名记录也会永久留在日志中
       // （任何人都删不掉，因为只新增不修改），便于日后核对迁移前/退赛前的数据。
@@ -1032,7 +1047,7 @@ async function handle(request, env) {
           clan.name,
           `移除/退赛：${entry.name}${admin ? "（管理员操作）" : ""}，原设备码：${entry.owner_token}`,
           admin ? "管理员" : entry.name,
-          entry.owner_token || admin || device
+          entry.owner_token || (admin ? ADMIN_LOG_TOKEN : device)
         )
       );
       if (!result) return json({ error: "无权操作该报名" }, 403);
@@ -1071,7 +1086,7 @@ async function handle(request, env) {
         clan: row.clan,
         details: row.details,
         operator: row.operator,
-        token: row.token
+        token: /^[a-f0-9]{48}$/i.test(row.token || "") ? ADMIN_LOG_TOKEN : row.token
       }))
     });
   }
@@ -1105,7 +1120,7 @@ async function handle(request, env) {
     await batch(db, [
       stmt(db, "INSERT INTO settings(key, value) VALUES('mainTitle', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", mainTitle),
       stmt(db, "INSERT INTO settings(key, value) VALUES('subTitle', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", subTitle),
-      stmt(db, "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'EDIT', '全局设置', ?, '管理员', ?)", Date.now(), `更新标题为「${mainTitle}」`, token),
+      stmt(db, "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'EDIT', '全局设置', ?, '管理员', ?)", Date.now(), `更新标题为「${mainTitle}」`, ADMIN_LOG_TOKEN),
       revStatement(db)
     ]);
     return json({ ok: true });
@@ -1129,7 +1144,7 @@ async function handle(request, env) {
     if (!clean.length) return json({ error: "至少保留一个段位" }, 400);
     await batch(db, [
       stmt(db, "INSERT INTO settings(key, value) VALUES('rankOptions', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify(clean)),
-      stmt(db, "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'EDIT', '全局设置', ?, '管理员', ?)", Date.now(), `更新段位库（共 ${clean.length} 个段位）`, token),
+      stmt(db, "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'EDIT', '全局设置', ?, '管理员', ?)", Date.now(), `更新段位库（共 ${clean.length} 个段位）`, ADMIN_LOG_TOKEN),
       revStatement(db)
     ]);
     return json({ ok: true });
@@ -1158,7 +1173,7 @@ async function handle(request, env) {
     );
     const results = await batch(db, [
       update,
-      logStatement(db, "EDIT", name, "管理员更新了部落信息", "管理员", token),
+      logStatement(db, "EDIT", name, "管理员更新了部落信息", "管理员", ADMIN_LOG_TOKEN),
       revStatement(db)
     ]);
     if (!(results[0]?.meta?.changes > 0)) {
@@ -1187,7 +1202,7 @@ async function handle(request, env) {
     }
     statements.push(
       stmt(db, "DELETE FROM entries WHERE id IN (SELECT value FROM json_each(?))", JSON.stringify(entryIds)),
-      stmt(db, "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'REMOVE', '全部部落', '管理员清空了所有报名名单（已自动归档）', '管理员', ?)", now, token),
+      stmt(db, "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'REMOVE', '全部部落', '管理员清空了所有报名名单（已自动归档）', '管理员', ?)", now, ADMIN_LOG_TOKEN),
       revStatement(db)
     );
     await batch(db, statements);

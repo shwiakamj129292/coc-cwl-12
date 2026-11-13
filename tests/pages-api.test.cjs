@@ -253,6 +253,124 @@ test("Pages API seeds data, enforces ownership and capacity, and archives reset"
   assert.equal(response.status, 404);
 });
 
+test("system preset entries are admin-only and admin session tokens are redacted from logs", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "preset-admin-password" };
+  const publicState = await readJson(await runApi(onRequest, env, "/api/state"));
+  const preset = publicState.clans[0].players[0];
+  assert.equal(Object.hasOwn(preset, "ownerToken"), false);
+
+  const deviceToken = (await readJson(await runApi(onRequest, env, "/api/device", {
+    method: "POST"
+  }))).deviceToken;
+  const guestHeaders = { "content-type": "application/json", "x-device-token": deviceToken };
+  let response = await runApi(onRequest, env, `/api/entries/${preset.id}`, {
+    method: "PATCH",
+    headers: guestHeaders,
+    body: JSON.stringify({ name: "Unauthorized edit", th: "" })
+  });
+  assert.equal(response.status, 403);
+  response = await runApi(onRequest, env, `/api/entries/${preset.id}`, {
+    method: "DELETE",
+    headers: { "x-device-token": deviceToken }
+  });
+  assert.equal(response.status, 403);
+
+  const login = await readJson(await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: env.ADMIN_PASSWORD })
+  }));
+  const adminHeaders = { authorization: `Bearer ${login.adminToken}`, "content-type": "application/json" };
+  response = await runApi(onRequest, env, `/api/entries/${preset.id}`, {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({ name: "Admin maintained", th: "" })
+  });
+  assert.equal(response.status, 200);
+
+  const adminState = await readJson(await runApi(onRequest, env, "/api/state?full=1", {
+    headers: adminHeaders
+  }));
+  const updatedPreset = adminState.clans[0].players.find(entry => entry.id === preset.id);
+  assert.equal(updatedPreset.ownerToken, "#SYS_PRESET");
+
+  const storedLog = env.DB.prepare("SELECT token FROM logs ORDER BY id DESC LIMIT 1").first();
+  assert.equal(storedLog.token, "#ADMIN");
+  env.DB.prepare(
+    "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'EDIT', 'test', 'legacy log', '管理员', ?)"
+  ).bind(Date.now(), login.adminToken).run();
+  const logsResponse = await readJson(await runApi(onRequest, env, "/api/logs", {
+    headers: { authorization: `Bearer ${login.adminToken}` }
+  }));
+  assert.ok(logsResponse.logs.some(log => log.token === "#ADMIN"));
+  assert.equal(JSON.stringify(logsResponse).includes(login.adminToken), false);
+});
+
+test("admin log redaction migration scrubs previously stored session tokens", () => {
+  const db = new TestD1();
+  const oldSession = "a".repeat(48);
+  db.prepare("INSERT INTO sessions(token, created_at, expires_at) VALUES(?, ?, ?)")
+    .bind(oldSession, Date.now(), Date.now() + 60_000).run();
+  db.prepare(
+    "INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?, 'EDIT', 'test', 'old admin action', '管理员', ?)"
+  ).bind(Date.now(), oldSession).run();
+
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../migrations/0003_redact_admin_session_logs.sql"),
+    "utf8"
+  );
+  db.database.exec(migration);
+  assert.equal(
+    db.prepare("SELECT token FROM logs WHERE details = 'old admin action'").first().token,
+    "#ADMIN"
+  );
+});
+
+test("substitute capacity is enforced for signup and admin moves without exposing the cap", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "sub-capacity-password" };
+  const deviceToken = (await readJson(await runApi(onRequest, env, "/api/device", {
+    method: "POST"
+  }))).deviceToken;
+  const signupResponse = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": deviceToken },
+    body: JSON.stringify({ clanId: "xiyang", name: "Main player", role: "main", th: "" })
+  });
+  assert.equal(signupResponse.status, 200);
+  const { entryId } = await readJson(signupResponse);
+
+  for (let index = 0; index < 30; index += 1) {
+    env.DB.prepare(
+      "INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) VALUES(?, 'xiyang', 'sub', ?, ?, ?)"
+    ).bind(`sub-cap-${index}`, `Sub ${index}`, deviceToken, Date.now() + index).run();
+  }
+
+  const login = await readJson(await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: env.ADMIN_PASSWORD })
+  }));
+  let response = await runApi(onRequest, env, `/api/entries/${entryId}/move`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${login.adminToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ direction: "toSub" })
+  });
+  assert.equal(response.status, 409);
+  assert.equal((await readJson(response)).error, "sub_full");
+
+  response = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": deviceToken },
+    body: JSON.stringify({ clanId: "xiyang", name: "One too many", role: "sub", th: "" })
+  });
+  assert.equal(response.status, 409);
+  const error = await readJson(response);
+  assert.equal(error.error, "sub_full");
+  assert.equal(error.message.includes("30"), false);
+});
+
 test("full state refresh returns owner tokens even when the revision is unchanged", async () => {
   const { onRequest } = await import(workerUrl);
   const env = { DB: new TestD1(), ADMIN_PASSWORD: "full-state-test-password" };
@@ -569,7 +687,7 @@ test("deleting an entry preserves the owner's device token in the audit log", as
   assert.ok(removal.details.includes("Preserve Me"));
 });
 
-test("only valid-format device tokens can sign up", async () => {
+test("only service-issued or previously bound device tokens can sign up", async () => {
   const { onRequest } = await import(workerUrl);
   const env = { DB: new TestD1() };
 
@@ -581,12 +699,24 @@ test("only valid-format device tokens can sign up", async () => {
   });
   assert.equal(response.status, 400);
 
-  // 格式正确但未签发过的令牌：为兼容迁移前已存于用户浏览器的旧令牌，
-  // 会被自动登记并放行（不影响正常用户报名）。
+  // 格式正确但未签发、也未绑定历史报名的令牌仍必须被拒绝。
   response = await runApi(onRequest, env, "/api/signup", {
     method: "POST",
     headers: { "content-type": "application/json", "x-device-token": "#U-DEADBEEF" },
     body: JSON.stringify({ clanId: "xiyang", name: "AutoRegistered", role: "sub", th: "" })
+  });
+  assert.equal(response.status, 403);
+  assert.equal(env.DB.prepare("SELECT token FROM device_tokens WHERE token = ?")
+    .bind("#U-DEADBEEF").first(), null);
+
+  // Migration-era tokens already attached to an entry remain valid.
+  env.DB.prepare(
+    "INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) VALUES(?, ?, ?, ?, ?, ?)"
+  ).bind("legacy-token-entry", "xiyang", "sub", "Legacy", "#U-LEGACY01", Date.now()).run();
+  response = await runApi(onRequest, env, "/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-device-token": "#U-LEGACY01" },
+    body: JSON.stringify({ clanId: "xiyang", name: "Legacy child", role: "sub", th: "" })
   });
   assert.equal(response.status, 200);
 

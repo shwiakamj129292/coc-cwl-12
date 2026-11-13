@@ -24,11 +24,19 @@ Cloudflare 免费 D1 单库上限为 500 MB，足够当前名单规模；免费�
 同时会检测异常的大数据使用（如短时间内大量报名 / 日志）并提醒管理员。
 每次清理还会顺带删除**已过期的管理员会话**与过期限流记录，避免这些临时表长期无界增长（过期即失效、即删，不影响正常登录与报名）。
 
-升级后请**执行一次**新迁移 [migrations/0002_storage_and_limits.sql](migrations/0002_storage_and_limits.sql)：
-在 D1 控制台 **Console** 粘贴执行，或运行
-`npx wrangler d1 execute coc-cwl-signup --remote --file=migrations/0002_storage_and_limits.sql`。
-该迁移会创建 `device_tokens`（设备令牌签发登记，报名只接受服务端签发过的令牌）与 `rate_limits`（报名 / 取令牌的 IP 限速）两张表，并回填老用户已签发的令牌。
-**即使尚未执行迁移，普通报名与管理员登录也不会受影响**（相关校验会自动降级放行），但建议尽快执行以启用全部防护。
+升级时请按顺序执行尚未运行的迁移：
+
+1. [migrations/0002_storage_and_limits.sql](migrations/0002_storage_and_limits.sql)：创建 `device_tokens`（设备令牌签发登记）与 `rate_limits`（报名 / 取令牌的 IP 限速）并回填旧报名已绑定令牌。
+2. [migrations/0003_redact_admin_session_logs.sql](migrations/0003_redact_admin_session_logs.sql)：清除历史操作日志中可能保存的管理员会话令牌。
+
+可在 D1 控制台 **Console** 粘贴 SQL 执行，或运行：
+
+```sh
+npx wrangler d1 execute coc-cwl-signup --remote --file=migrations/0002_storage_and_limits.sql
+npx wrangler d1 execute coc-cwl-signup --remote --file=migrations/0003_redact_admin_session_logs.sql
+```
+
+这两项迁移都只需对目标远程数据库执行一次；执行前建议先备份 D1。**未执行 `0002` 时，令牌登记与 IP 限流会降级放行**，因此不要把代码中的限流视为已生效，直到确认迁移完成。
 
 定时清理依赖 `wrangler.jsonc` 中的 Cron Triggers（默认每 6 小时一次），`npx wrangler deploy` 会自动生效。
 容量额度默认取服务器（Cloudflare D1）给你的 500 MB，可在管理员面板「存储容量」里改成你实际拿到的额度，
