@@ -5,7 +5,7 @@
  * 启动：node server.js   或   npm start
  * 环境变量：
  *   PORT             监听端口，默认 3000
- *   ADMIN_PASSWORD   管理员密码；不设置则首次启动初始化为默认 "XXXX"（请务必修改）
+ *   ADMIN_PASSWORD   可选的管理员密码；首次初始化建议设置强密码
  *   DB_FILE          SQLite 数据文件路径，默认 ./data/app.db
  *
  * 安全模型：
@@ -155,11 +155,8 @@ function initAdminPassword() {
   const envPw = process.env.ADMIN_PASSWORD;
   if (envPw) {
     setSetting('adminPwd', hashPassword(envPw));
-    return;
-  }
-  if (!getSetting('adminPwd')) {
-    setSetting('adminPwd', hashPassword(process.env.ADMIN_PASSWORD||''));
-    console.warn('[警告] 未设置 ADMIN_PASSWORD，已使用默认密码 XXXX，请尽快通过环境变量修改！');
+  } else if (!getSetting('adminPwd')) {
+    console.warn('[警告] 尚未设置管理员密码。请通过 ADMIN_PASSWORD 初始化；系统不再提供默认密码。');
   }
 }
 
@@ -222,18 +219,27 @@ function loginRateLimited(ip) {
 // ---------------------------------------------------------------------------
 // 状态读取
 // ---------------------------------------------------------------------------
-function buildState() {
+function buildState(req) {
+  const admin = !!getAdminToken(req);
+  const device = getDeviceToken(req);
   const clanRows = db.prepare('SELECT * FROM clans ORDER BY sort ASC').all();
   const entryRows = db.prepare('SELECT * FROM entries ORDER BY created_at ASC, id ASC').all();
   const byClan = {};
   for (const e of entryRows) (byClan[e.clan_id] ||= []).push(e);
+  const presentEntry = (entry) => {
+    const value = { id: entry.id, text: entry.name };
+    if (admin || entry.owner_token === '#SYS_PRESET' || (device && entry.owner_token === device)) {
+      value.ownerToken = entry.owner_token;
+    }
+    return value;
+  };
   const clans = clanRows.map(c => {
     const list = byClan[c.id] || [];
     return {
       id: c.id, name: c.name, tag: c.tag, rank: c.rank, category: c.category,
       capacity: c.capacity, time: c.time, requirement: c.requirement,
-      players: list.filter(e => e.role === 'main').map(e => ({ id: e.id, text: e.name, ownerToken: e.owner_token })),
-      subs: list.filter(e => e.role !== 'main').map(e => ({ id: e.id, text: e.name, ownerToken: e.owner_token }))
+      players: list.filter(e => e.role === 'main').map(presentEntry),
+      subs: list.filter(e => e.role !== 'main').map(presentEntry)
     };
   });
   return {
@@ -258,9 +264,27 @@ const server = http.createServer(async (req, res) => {
   try {
     // ---------- 静态资源 ----------
     if (method === 'GET' && (p === '/' || p === '/index.html')) {
-      const html = fs.readFileSync(path.join(ROOT, 'index.html'));
+      const html = fs.readFileSync(path.join(ROOT, 'dist', 'index.html'));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       return res.end(html);
+    }
+    if (method === 'GET' && (
+      p === '/assets/app.css' ||
+      p === '/vendor/fontawesome/css/all.min.css' ||
+      /^\/vendor\/fontawesome\/webfonts\/[A-Za-z0-9_.-]+$/.test(p)
+    )) {
+      const assetPath = path.join(ROOT, 'dist', p.slice(1));
+      if (!fs.existsSync(assetPath)) return sendJson(res, 404, { error: 'not found' });
+      const extension = path.extname(assetPath);
+      const contentType = {
+        '.css': 'text/css; charset=utf-8',
+        '.woff2': 'font/woff2',
+        '.woff': 'font/woff',
+        '.ttf': 'font/ttf',
+        '.svg': 'image/svg+xml'
+      }[extension] || 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000, immutable' });
+      return res.end(fs.readFileSync(assetPath));
     }
 
     // ---------- 设备令牌 ----------
@@ -293,10 +317,11 @@ const server = http.createServer(async (req, res) => {
     // ---------- 状态 ----------
     if (p === '/api/state' && method === 'GET') {
       const clientRev = url.searchParams.get('rev');
-      if (clientRev !== null && parseInt(clientRev, 10) === getRev()) {
+      const forceFull = url.searchParams.get('full') === '1';
+      if (!forceFull && clientRev !== null && parseInt(clientRev, 10) === getRev()) {
         return sendJson(res, 200, { rev: getRev(), unchanged: true });
       }
-      return sendJson(res, 200, buildState());
+      return sendJson(res, 200, buildState(req));
     }
 
     // ---------- 用户报名 ----------
@@ -456,7 +481,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/reset' && method === 'POST') {
-      const state = buildState();
+      const state = buildState(req);
       const hasData = state.clans.some(c => c.players.length || c.subs.length);
       if (hasData) {
         const period = state.meta.mainTitle || new Date().toISOString().slice(0, 7);

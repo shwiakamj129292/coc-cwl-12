@@ -9,7 +9,6 @@ const LOGIN_WINDOW_MS = 5 * 60 * 1000;
 const PASSWORD_HASH_ITERATIONS = 10000;
 const MIN_PASSWORD_HASH_ITERATIONS = 1000;
 const MAX_PASSWORD_HASH_ITERATIONS = 1000000;
-const DEFAULT_ADMIN_PASSWORD = "";
 const MAX_BODY = 64 * 1024;
 const ALLOWED_TH = new Set(["", "19本", "18本", "17本", "16本", "15本及以下"]);
 const VALID_COLORS = new Set([
@@ -586,20 +585,14 @@ async function adminPasswordConfigured(db, env) {
   return !!(await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'"));
 }
 
-// Resolve the currently effective admin password in priority order:
-//   env.ADMIN_PASSWORD (Secret) > DB adminPasswordHash > built-in DEFAULT.
-// The default always works so a fresh deployment is never locked out.
+// Resolve the current password in priority order: Secret, then stored hash.
+// There is intentionally no built-in default credential.
 async function verifyCurrentAdminPassword(db, env, candidate) {
   const configuredPassword = typeof env.ADMIN_PASSWORD === "string" ? env.ADMIN_PASSWORD : "";
   if (configuredPassword) return passwordMatches(candidate, configuredPassword);
   const storedHash = await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'");
   if (storedHash) return verifyPassword(candidate, storedHash.value);
-  return passwordMatches(candidate, DEFAULT_ADMIN_PASSWORD);
-}
-
-function setupTokenRequired(db, env) {
-  const envSetupToken = typeof env.ADMIN_SETUP_TOKEN === "string" ? env.ADMIN_SETUP_TOKEN : "";
-  return { envSetupToken, required: !!envSetupToken };
+  return false;
 }
 
 async function setupAdminPassword(request, env) {
@@ -617,49 +610,38 @@ async function setupAdminPassword(request, env) {
     return json({ error: "密码需为 12 至 128 个字符" }, 400);
   }
 
-  // A setup token is only required when one has been explicitly configured
-  // (env ADMIN_SETUP_TOKEN, or a row in settings). Otherwise the very first
-  // setup call bootstraps the admin password without a token — this mirrors
-  // the common first-run bootstrap pattern used by self-hosted apps, so a
-  // misconfigured Cloudflare secret does not lock the admin out entirely.
-  const { envSetupToken, required } = setupTokenRequired(db, env);
-  const setupTokenRow = required
-    ? null
-    : await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
-  const tokenRequired = required || !!setupTokenRow;
+  const envSetupToken = typeof env.ADMIN_SETUP_TOKEN === "string" ? env.ADMIN_SETUP_TOKEN : "";
+  const storedSetupToken = await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
+  if (!envSetupToken && !storedSetupToken) {
+    return json({ error: "尚未配置一次性授权码，请先设置 ADMIN_SETUP_TOKEN Secret" }, 503);
+  }
 
-  let token = "";
-  if (tokenRequired) {
-    token = String(body.token || "");
-    if (!/^[0-9a-f]{64}$/i.test(token)) {
-      return json({ error: "一次性授权码无效" }, 403);
-    }
-    const expected = required ? envSetupToken : (setupTokenRow ? setupTokenRow.value : "");
-    if (!expected || !passwordMatches(token, expected)) {
-      return json({ error: "一次性授权码无效或已使用" }, 403);
-    }
+  const token = String(body.token || "");
+  if (!/^[0-9a-f]{64}$/i.test(token)) {
+    return json({ error: "一次性授权码无效" }, 403);
+  }
+  const expected = envSetupToken || storedSetupToken.value;
+  if (!expected || !passwordMatches(token, expected)) {
+    return json({ error: "一次性授权码无效或已使用" }, 403);
   }
 
   const encoded = await hashPassword(password, null, passwordIterations(env));
-  const where = tokenRequired
-    ? `WHERE (EXISTS (SELECT 1 FROM settings WHERE key = 'admin_setup_token' AND value = ?)
-          OR ? <> '')
-       AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'adminPasswordHash')`
-    : `WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'adminPasswordHash')`;
   const inserted = await first(
     db,
     `INSERT INTO settings(key, value)
      SELECT 'adminPasswordHash', ?
-     ${where}
+     WHERE (EXISTS (SELECT 1 FROM settings WHERE key = 'admin_setup_token' AND value = ?)
+            OR ? <> '')
+       AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'adminPasswordHash')
      RETURNING key`,
-    ...(tokenRequired ? [encoded, token, envSetupToken] : [encoded])
+    encoded, token, envSetupToken
   );
   if (!inserted) {
-    return json({ error: tokenRequired ? "一次性授权码无效或已使用" : "管理员密码已初始化" }, 409);
+    return json({ error: "一次性授权码无效、已使用或管理员密码已初始化" }, 409);
   }
-  if (tokenRequired && !required) {
+  if (!envSetupToken && storedSetupToken) {
     await stmt(db, "DELETE FROM settings WHERE key = 'admin_setup_token' AND value = ?")
-      .bind(token).run();
+      .bind(storedSetupToken.value).run();
   }
   const sessionToken = randomHex(24);
   const expiresAt = Date.now() + ADMIN_SESSION_MS;
@@ -766,15 +748,15 @@ async function changeAdminPassword(request, env) {
   const db = env.DB;
   const token = await adminToken(request, db);
   if (!token) return json({ error: "需要管理员权限" }, 403);
+  if (typeof env.ADMIN_PASSWORD === "string" && env.ADMIN_PASSWORD) {
+    return json({ error: "管理员密码由 Cloudflare ADMIN_PASSWORD Secret 管理，请到 Cloudflare 控制台更新该 Secret" }, 409);
+  }
 
   const body = await readJson(request);
   const oldPassword = String(body.oldPassword || "");
   const newPassword = String(body.newPassword || "");
   if (newPassword.length < 12 || newPassword.length > 128) {
     return json({ error: "新密码需为 12 至 128 个字符" }, 400);
-  }
-  if (newPassword === DEFAULT_ADMIN_PASSWORD) {
-    return json({ error: "新密码不能使用系统默认密码" }, 400);
   }
   if (!(await verifyCurrentAdminPassword(db, env, oldPassword))) {
     return json({ error: "当前密码不正确" }, 401);
@@ -807,15 +789,10 @@ async function handle(request, env) {
 
   if (path === "/api/admin/setup/status") {
     if (method !== "GET") return json({ error: "method" }, 405);
-    const { envSetupToken, required } = setupTokenRequired(db, env);
-    const setupTokenRow = required
-      ? null
-      : await first(db, "SELECT value FROM settings WHERE key = 'admin_setup_token'");
-    const tokenRequired = required || !!setupTokenRow;
     const configured = await adminPasswordConfigured(db, env);
     return json({
       available: !configured,
-      tokenRequired
+      tokenRequired: !configured
     });
   }
 
@@ -912,7 +889,8 @@ async function handle(request, env) {
     if (method !== "GET") return json({ error: "method" }, 405);
     const currentRev = Number.parseInt((await first(db, "SELECT value FROM settings WHERE key = 'rev'"))?.value || "0", 10);
     const clientRev = url.searchParams.get("rev");
-    if (clientRev !== null && Number.parseInt(clientRev, 10) === currentRev) {
+    const forceFull = url.searchParams.get("full") === "1";
+    if (!forceFull && clientRev !== null && Number.parseInt(clientRev, 10) === currentRev) {
       return json({ rev: currentRev, unchanged: true });
     }
     return json(await buildState(db, request));

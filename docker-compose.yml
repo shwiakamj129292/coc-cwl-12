@@ -8,8 +8,8 @@ services:
       # 宿主机 8000 -> 容器 3000，可按需修改左侧端口
       - "8000:3000"
     environment:
-      # 首次部署务必修改为强密码！也可用 .env 文件注入
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set a strong ADMIN_PASSWORD}"
+      # 必须从 .env 或环境变量提供强密码；没有默认密码。
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set a strong ADMIN_PASSWORD in .env}"
       PORT: "3000"
       DB_FILE: "/data/app.db"
     volumes:
