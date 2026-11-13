@@ -273,3 +273,27 @@ test("one-time admin setup stores a hash, consumes its code, and enables login",
   });
   assert.equal(response.status, 409);
 });
+
+test("ADMIN_PASSWORD takes priority over a stale stored password hash", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "env-secret-password" };
+  // Simulate a hash left in the database by an earlier one-time setup.
+  const staleHash = `210000$${"ab".repeat(16)}$${"cd".repeat(32)}`;
+  await env.DB.prepare("INSERT INTO settings(key, value) VALUES('adminPasswordHash', ?)")
+    .bind(staleHash).run();
+
+  let response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.30" },
+    body: JSON.stringify({ password: "env-secret-password" })
+  });
+  assert.equal(response.status, 200);
+  assert.ok((await readJson(response)).adminToken);
+
+  response = await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "192.0.2.30" },
+    body: JSON.stringify({ password: "some-other-password" })
+  });
+  assert.equal(response.status, 401);
+});

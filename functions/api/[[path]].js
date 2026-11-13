@@ -311,14 +311,17 @@ async function login(request, env) {
 
   const body = await readJson(request);
   const storedHash = await first(db, "SELECT value FROM settings WHERE key = 'adminPasswordHash'");
-  if (!storedHash && (typeof env.ADMIN_PASSWORD !== "string" || !env.ADMIN_PASSWORD)) {
+  // An explicitly configured ADMIN_PASSWORD (env/secret) always takes priority
+  // over the stored hash, so rotating the secret is never shadowed by a stale one.
+  const configuredPassword = typeof env.ADMIN_PASSWORD === "string" ? env.ADMIN_PASSWORD : "";
+  if (!configuredPassword && !storedHash) {
     return json({ error: "管理员密码未配置" }, 503);
   }
   const candidate = String(body.password || "");
   if (candidate.length > 128) return json({ error: "密码错误" }, 401);
-  const valid = storedHash
-    ? await verifyAdminPassword(candidate, storedHash.value)
-    : passwordMatches(candidate, env.ADMIN_PASSWORD);
+  const valid = configuredPassword
+    ? passwordMatches(candidate, configuredPassword)
+    : await verifyAdminPassword(candidate, storedHash.value);
   if (!valid) {
     return json({ error: "密码错误" }, 401);
   }
