@@ -1,9 +1,8 @@
 import { onRequest, runMaintenance } from "./functions/api/[[path]].js";
 
 // 主页（HTML）安全响应头。
-// 说明：页面依赖 cdn.tailwindcss.com（运行期注入样式）与 cdnjs 的 Font Awesome，
-// 且使用了内联脚本与 onclick 内联事件，因此 script-src/style-src 必须放开 'unsafe-inline'
-// 与这两个 CDN；同时用 frame-ancestors 'none' / X-Frame-Options 防点击劫持、
+// 页面样式和图标均由本站静态资源提供；内联脚本与 onclick 仍需要 unsafe-inline。
+// 同时用 frame-ancestors 'none' / X-Frame-Options 防点击劫持、
 // object-src 'none' 与 base-uri 'self' 收紧其余面。
 const HTML_CSP = [
   "default-src 'self'",
@@ -11,9 +10,9 @@ const HTML_CSP = [
   "object-src 'none'",
   "frame-ancestors 'none'",
   "form-action 'self'",
-  "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com",
-  "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
-  "font-src 'self' data: https://cdnjs.cloudflare.com",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self' data:",
   "img-src 'self' data: blob:",
   "connect-src 'self'"
 ].join("; ");
