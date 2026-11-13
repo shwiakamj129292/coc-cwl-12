@@ -29,6 +29,8 @@ const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'data', 'app.db');
 const ADMIN_SESSION_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
 const ROOT = __dirname;
 const MAX_BODY = 64 * 1024; // 64KB
+const MAX_SUBS_PER_CLAN = 30;
+const ADMIN_LOG_TOKEN = '#ADMIN';
 const ALLOWED_TH = new Set(['', '19本', '18本', '17本', '16本', '15本及以下']);
 
 // 展示用时间统一按马来西亚时区（UTC+8）格式化。
@@ -68,6 +70,9 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS device_tokens (
+    token TEXT PRIMARY KEY, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS archives (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +167,16 @@ function initAdminPassword() {
 
 initSeed();
 initAdminPassword();
+db.prepare(`
+  INSERT OR IGNORE INTO device_tokens(token, created_at, last_seen)
+  SELECT owner_token, MIN(created_at), MAX(created_at)
+  FROM entries WHERE owner_token GLOB '#U-*'
+  GROUP BY owner_token
+`).run();
+db.prepare(`
+  UPDATE logs SET token = ?
+  WHERE length(token) = 48 AND token NOT GLOB '*[^0-9a-fA-F]*'
+`).run(ADMIN_LOG_TOKEN);
 
 // ---------------------------------------------------------------------------
 // 鉴权
@@ -180,6 +195,25 @@ function getAdminToken(req) {
 function getDeviceToken(req) {
   const t = String(req.headers['x-device-token'] || '');
   return /^#U-[A-Z0-9]{4,32}$/.test(t) ? t : null;
+}
+function registerDeviceToken(token) {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO device_tokens(token, created_at, last_seen) VALUES(?,?,?)
+    ON CONFLICT(token) DO UPDATE SET last_seen = excluded.last_seen
+  `).run(token, now, now);
+}
+function isValidDeviceToken(token) {
+  if (!token) return false;
+  const known = db.prepare('SELECT token FROM device_tokens WHERE token = ?').get(token);
+  if (known) {
+    db.prepare('UPDATE device_tokens SET last_seen = ? WHERE token = ?').run(Date.now(), token);
+    return true;
+  }
+  const legacy = db.prepare('SELECT id FROM entries WHERE owner_token = ? LIMIT 1').get(token);
+  if (!legacy) return false;
+  registerDeviceToken(token);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +262,7 @@ function buildState(req) {
   for (const e of entryRows) (byClan[e.clan_id] ||= []).push(e);
   const presentEntry = (entry) => {
     const value = { id: entry.id, text: entry.name };
-    if (admin || entry.owner_token === '#SYS_PRESET' || (device && entry.owner_token === device)) {
+    if (admin || (device && entry.owner_token === device)) {
       value.ownerToken = entry.owner_token;
     }
     return value;
@@ -290,6 +324,7 @@ const server = http.createServer(async (req, res) => {
     // ---------- 设备令牌 ----------
     if (p === '/api/device' && method === 'POST') {
       const token = '#U-' + crypto.randomBytes(8).toString('hex').toUpperCase();
+      registerDeviceToken(token);
       return sendJson(res, 200, { deviceToken: token });
     }
 
@@ -328,6 +363,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/signup' && method === 'POST') {
       const actor = getDeviceToken(req);
       if (!actor) return sendJson(res, 400, { error: '缺少或非法的设备令牌' });
+      if (!isValidDeviceToken(actor)) return sendJson(res, 403, { error: 'invalid_device_token', message: '设备令牌已失效，请重新获取后重试' });
       const body = await readBody(req);
       const clan = db.prepare('SELECT * FROM clans WHERE id = ?').get(String(body.clanId || ''));
       if (!clan) return sendJson(res, 404, { error: '部落不存在' });
@@ -343,6 +379,9 @@ const server = http.createServer(async (req, res) => {
         if (role === 'main') {
           const cnt = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'main'").get(clan.id).n;
           if (cnt >= clan.capacity) { db.exec('ROLLBACK'); return sendJson(res, 409, { error: 'full', message: '正选名额已满，请改报替补' }); }
+        } else {
+          const cnt = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'sub'").get(clan.id).n;
+          if (cnt >= MAX_SUBS_PER_CLAN) { db.exec('ROLLBACK'); return sendJson(res, 409, { error: 'sub_full', message: '替补席位已满，请联系管理员' }); }
         }
         db.prepare('INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) VALUES(?,?,?,?,?,?)').run(entryId, clan.id, role, text, actor, now);
         db.exec('COMMIT');
@@ -358,29 +397,44 @@ const server = http.createServer(async (req, res) => {
       const entryId = decodeURIComponent(entryMatch[1]);
       const isMove = !!entryMatch[2];
       const adminToken = getAdminToken(req);
-      const device = getDeviceToken(req);
+      const candidateDevice = getDeviceToken(req);
       const entry = db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
       if (!entry) return sendJson(res, 404, { error: '报名不存在' });
       const clan = db.prepare('SELECT * FROM clans WHERE id = ?').get(entry.clan_id);
+      const device = !adminToken && candidateDevice === entry.owner_token && isValidDeviceToken(candidateDevice)
+        ? candidateDevice
+        : null;
 
       if (isMove) {
         if (method !== 'POST') return sendJson(res, 405, { error: 'method' });
         if (!adminToken) return sendJson(res, 403, { error: '需要管理员权限' });
         const body = await readBody(req);
         const toSub = body.direction === 'toSub';
-        if (!toSub && entry.role !== 'main') {
-          const cnt = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'main'").get(entry.clan_id).n;
-          if (cnt >= clan.capacity) return sendJson(res, 409, { error: '正选已满，无法升为正选' });
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          const current = db.prepare('SELECT role FROM entries WHERE id = ?').get(entryId);
+          if (!current) { db.exec('ROLLBACK'); return sendJson(res, 404, { error: '报名不存在' }); }
+          if (toSub && current.role !== 'sub') {
+            const count = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'sub'").get(entry.clan_id).n;
+            if (count >= MAX_SUBS_PER_CLAN) { db.exec('ROLLBACK'); return sendJson(res, 409, { error: 'sub_full', message: '替补席位已满，请联系管理员' }); }
+          }
+          if (!toSub && current.role !== 'main') {
+            const count = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'main'").get(entry.clan_id).n;
+            if (count >= clan.capacity) { db.exec('ROLLBACK'); return sendJson(res, 409, { error: 'full', message: '正选已满，无法升为正选' }); }
+          }
+          db.prepare('UPDATE entries SET role = ? WHERE id = ?').run(toSub ? 'sub' : 'main', entryId);
+          db.exec('COMMIT');
+        } catch (e) {
+          db.exec('ROLLBACK');
+          throw e;
         }
-        db.prepare('UPDATE entries SET role = ? WHERE id = ?').run(toSub ? 'sub' : 'main', entryId);
-        addLog('EDIT', clan.name, `${toSub ? '转为替补' : '升为正选'}：${entry.name}`, '管理员', adminToken);
+        addLog('EDIT', clan.name, `${toSub ? '转为替补' : '升为正选'}：${entry.name}`, '管理员', ADMIN_LOG_TOKEN);
         bumpRev();
         return sendJson(res, 200, { ok: true });
       }
 
       const isOwner = device && entry.owner_token === device;
-      const canClaim = !adminToken && device && entry.owner_token === '#SYS_PRESET';
-      if (!adminToken && !isOwner && !canClaim) return sendJson(res, 403, { error: '无权操作该报名' });
+      if (!adminToken && !isOwner) return sendJson(res, 403, { error: '无权操作该报名' });
 
       if (method === 'PATCH') {
         const body = await readBody(req);
@@ -388,16 +442,15 @@ const server = http.createServer(async (req, res) => {
         const name = String(body.name || '').trim().slice(0, 40);
         if (!name) return sendJson(res, 400, { error: '昵称不能为空' });
         const newText = (body.th && th) ? `${name} ${th}` : name;
-        const newOwner = canClaim ? device : entry.owner_token;
-        db.prepare('UPDATE entries SET name = ?, owner_token = ? WHERE id = ?').run(newText, newOwner, entryId);
-        addLog('EDIT', clan.name, `修改报名：${entry.name} ➔ ${newText}`, name, adminToken || device);
+        db.prepare('UPDATE entries SET name = ?, owner_token = ? WHERE id = ?').run(newText, entry.owner_token, entryId);
+        addLog('EDIT', clan.name, `修改报名：${entry.name} ➔ ${newText}`, adminToken ? '管理员' : name, adminToken ? ADMIN_LOG_TOKEN : device);
         bumpRev();
         return sendJson(res, 200, { ok: true });
       }
       if (method === 'DELETE') {
         db.prepare('DELETE FROM entries WHERE id = ?').run(entryId);
         // 保留该报名本人的设备码：即使管理员替他退赛，设备码与历史记录也留在日志中。
-        addLog('REMOVE', clan.name, `移除/退赛：${entry.name}${adminToken ? '（管理员操作）' : ''}，原设备码：${entry.owner_token}`, adminToken ? '管理员' : entry.name, entry.owner_token || adminToken || device);
+        addLog('REMOVE', clan.name, `移除/退赛：${entry.name}${adminToken ? '（管理员操作）' : ''}，原设备码：${entry.owner_token}`, adminToken ? '管理员' : entry.name, entry.owner_token || (adminToken ? ADMIN_LOG_TOKEN : device));
         bumpRev();
         return sendJson(res, 200, { ok: true });
       }
@@ -411,7 +464,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/logs' && method === 'GET') {
       const rows = db.prepare('SELECT * FROM logs ORDER BY id DESC').all();
       return sendJson(res, 200, {
-        logs: rows.map(r => ({ time: formatDateTime(r.time), type: r.type, clan: r.clan, details: r.details, operator: r.operator, token: r.token }))
+        logs: rows.map(r => ({
+          time: formatDateTime(r.time), type: r.type, clan: r.clan, details: r.details,
+          operator: r.operator, token: /^[a-f0-9]{48}$/i.test(r.token || '') ? ADMIN_LOG_TOKEN : r.token
+        }))
       });
     }
 
@@ -434,7 +490,7 @@ const server = http.createServer(async (req, res) => {
       if (!mainTitle || !subTitle) return sendJson(res, 400, { error: '标题不能为空' });
       setSetting('mainTitle', mainTitle);
       setSetting('subTitle', subTitle);
-      addLog('EDIT', '全局设置', `更新标题为「${mainTitle}」`, '管理员', token);
+      addLog('EDIT', '全局设置', `更新标题为「${mainTitle}」`, '管理员', ADMIN_LOG_TOKEN);
       bumpRev();
       return sendJson(res, 200, { ok: true });
     }
@@ -452,7 +508,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (!clean.length) return sendJson(res, 400, { error: '至少保留一个段位' });
       setSetting('rankOptions', JSON.stringify(clean));
-      addLog('EDIT', '全局设置', `更新段位库（共 ${clean.length} 个段位）`, '管理员', token);
+      addLog('EDIT', '全局设置', `更新段位库（共 ${clean.length} 个段位）`, '管理员', ADMIN_LOG_TOKEN);
       bumpRev();
       return sendJson(res, 200, { ok: true });
     }
@@ -475,7 +531,7 @@ const server = http.createServer(async (req, res) => {
       if (capacity < mainCount) return sendJson(res, 409, { error: `正选上限不能小于当前已报名人数（${mainCount}）` });
       db.prepare('UPDATE clans SET name=?, tag=?, rank=?, category=?, capacity=?, time=?, requirement=? WHERE id=?')
         .run(name, tag, rank, category, capacity, time, requirement, clanId);
-      addLog('EDIT', name, '管理员更新了部落信息', '管理员', token);
+      addLog('EDIT', name, '管理员更新了部落信息', '管理员', ADMIN_LOG_TOKEN);
       bumpRev();
       return sendJson(res, 200, { ok: true });
     }
@@ -489,7 +545,7 @@ const server = http.createServer(async (req, res) => {
           .run(period, Date.now(), JSON.stringify({ meta: state.meta, clans: state.clans }));
       }
       db.prepare('DELETE FROM entries').run();
-      addLog('REMOVE', '全部部落', '管理员清空了所有报名名单（已自动归档）', '管理员', token);
+      addLog('REMOVE', '全部部落', '管理员清空了所有报名名单（已自动归档）', '管理员', ADMIN_LOG_TOKEN);
       bumpRev();
       return sendJson(res, 200, { ok: true, archived: hasData });
     }
