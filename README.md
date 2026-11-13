@@ -7,9 +7,9 @@
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，进入 **Workers & Pages → D1 SQL Database**，新建数据库 `coc-cwl-signup`。
 2. 打开新数据库的 **Console**，将 [初始化 SQL](migrations/0001_init.sql) 全部内容粘贴并执行一次。它会导入 7 个部落和 44 条旧报名。
 3. 进入 **Workers & Pages → Create application → Connect to Git**，选择本仓库和要部署的分支，使用 Workers Builds（不是 Pages）。
-4. 构建设置使用 `npm run build`，部署命令使用 `npx wrangler deploy`。预览构建也使用 `npm run build`；仓库中的 `wrangler.jsonc` 会提供 Worker 入口和静态资源配置，输出目录为 `dist`。
-5. 创建 Worker 后，进入 **Settings → Bindings → Add → D1 database**，变量名填 `DB` 并选择 `coc-cwl-signup`。Wrangler 配置故意不包含数据库 ID，绑定由 Dashboard 管理。
-6. 在 **Settings → Variables and Secrets** 添加 Secret `ADMIN_PASSWORD`，设置强管理员密码。绑定和 Secret 配置完成后，API 即可使用。
+4. 构建设置使用 `npm run build`，部署命令使用 `npx wrangler deploy`。预览构建也使用 `npm run build`；仓库中的 `wrangler.jsonc` 会提供 Worker 入口、静态资源和 D1 绑定配置，输出目录为 `dist`。
+5. D1 绑定由 `wrangler.jsonc` 的 `d1_databases` 统一声明（绑定名 `DB`、数据库名 `coc-cwl-signup`）。部署前请把其中的 `database_id` 改成第 1 步新建数据库显示的 ID；`npx wrangler deploy` 会自动带上该绑定，**无需**在 Dashboard 的 **Settings → Bindings** 再手动添加。
+6. 在 **Settings → Variables and Secrets** 添加 Secret `ADMIN_PASSWORD`，设置强管理员密码。该 Secret 优先于数据库中的旧密码哈希，配置后即可用它登录管理员。
 7. 打开 Cloudflare 提供的 `https://<项目名>.<子域名>.workers.dev`，这是分享给群友的报名链接。
 
 不要重复执行初始化 SQL，否则会因主键重复而报错。
