@@ -1249,6 +1249,7 @@ async function handle(request, env) {
     const skipped = parsed
       .filter(item => !item.ok)
       .map(item => ({ line: item.line, text: item.raw, reason: item.reason }));
+    const demoted = [];
     const now = Date.now();
     const statements = [];
     const inserted = [];
@@ -1278,27 +1279,62 @@ async function handle(request, env) {
     }
 
     let added = 0;
+    const demoteCandidates = [];
     if (statements.length) {
       const results = await batch(db, statements);
       for (const ref of inserted) {
         if ((results[ref.insertIndex]?.meta?.changes || 0) > 0) {
           added += 1;
+        } else if (ref.item.role === "main") {
+          // 正选名额已满 → 转入第二轮自动改报替补。
+          demoteCandidates.push(ref.item);
         } else {
-          skipped.push({
-            line: ref.item.line,
-            text: ref.item.raw,
-            reason: ref.item.role === "sub" ? "替补席位已满" : "正选名额已满"
-          });
+          skipped.push({ line: ref.item.line, text: ref.item.raw, reason: "替补席位已满" });
         }
       }
-      if (added > 0) {
-        await stmt(
+    }
+
+    // 第二轮：正选已满的条目自动改为替补；若替补也满才跳过。
+    if (demoteCandidates.length) {
+      const demoteStatements = [];
+      const demoteRefs = [];
+      for (const item of demoteCandidates) {
+        const text = item.th ? `${item.name} ${item.th}` : item.name;
+        const insertIndex = demoteStatements.length;
+        demoteStatements.push(stmt(
           db,
-          "UPDATE settings SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'rev'"
-        ).run();
+          `INSERT INTO entries(id, clan_id, role, name, owner_token, created_at)
+           SELECT ?, ?, 'sub', ?, ?, ?
+           WHERE (SELECT COUNT(*) FROM entries WHERE clan_id = ? AND role = 'sub') < ?`,
+          `e_${randomHex(8)}`, item.clanId, text, IMPORT_OWNER_TOKEN, now,
+          item.clanId, MAX_SUBS_PER_CLAN
+        ));
+        demoteStatements.push(stmt(
+          db,
+          "INSERT INTO logs(time, type, clan, details, operator, token) " +
+            "SELECT ?, 'ADD', ?, ?, '管理员', ? WHERE changes() > 0",
+          now, item.clanName, `批量导入【正选已满自动转替补】：${text}`, ADMIN_LOG_TOKEN
+        ));
+        demoteRefs.push({ item, insertIndex, text });
+      }
+      const demoteResults = await batch(db, demoteStatements);
+      for (const ref of demoteRefs) {
+        if ((demoteResults[ref.insertIndex]?.meta?.changes || 0) > 0) {
+          added += 1;
+          demoted.push({ line: ref.item.line, text: ref.item.raw, clan: ref.item.clanName, name: ref.text });
+        } else {
+          skipped.push({ line: ref.item.line, text: ref.item.raw, reason: "正选与替补均已满" });
+        }
       }
     }
-    return json({ ok: true, added, total: parsed.length, skipped });
+
+    if (added > 0) {
+      await stmt(
+        db,
+        "UPDATE settings SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'rev'"
+      ).run();
+    }
+    return json({ ok: true, added, total: parsed.length, skipped, demoted });
   }
 
   if (path === "/api/logs") {
