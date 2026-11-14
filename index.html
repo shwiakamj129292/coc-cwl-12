@@ -303,7 +303,7 @@
                 多部落联赛报名接龙<br>
                 请查看下方各部落段位、标签和要求，按「部落名 | 昵称 | 本数 | 正选/替补」接龙
             </div>
-            <p class="text-[11px] text-slate-500">接龙里的说明和序号会自动忽略；本数可省略，角色可填正选或替补。每条写了部落名就按该部落导入；没写部落名时才使用下方默认部落。</p>
+            <p class="text-[11px] text-slate-500">接龙里的说明和序号会自动忽略；本数可省略，角色可填正选或替补。每条写了部落名就按该部落导入；没写部落名时才使用下方默认部落。<br>若某条报「正选」但该部落正选已满，会自动改报「替补」，并在导入结果里逐条列出改了哪些人；正选与替补都满才会跳过。</p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <label class="text-xs text-slate-400 space-y-1 block">
                     <span>默认部落（可留空，表示按每行行首的部落名识别）</span>
@@ -1098,10 +1098,19 @@
                 });
                 await fetchState(true);
                 const skipped = Array.isArray(data.skipped) ? data.skipped : [];
-                if (skipped.length) {
+                const demoted = Array.isArray(data.demoted) ? data.demoted : [];
+                if (skipped.length || demoted.length) {
                     box.className = 'text-xs rounded-xl border border-amber-700/60 bg-amber-950/30 text-amber-200 p-3 space-y-1 max-h-40 overflow-y-auto';
-                    box.innerHTML = `<div class="font-bold">成功导入 ${data.added} 条，以下 ${skipped.length} 条未导入：</div>` +
-                        skipped.map(s => `<div>第 ${s.line} 行「${escapeHtml(s.text)}」：${escapeHtml(s.reason)}</div>`).join('');
+                    let html = `<div class="font-bold">成功导入 ${data.added} 条报名。</div>`;
+                    if (demoted.length) {
+                        html += `<div class="font-bold text-amber-100 pt-1">⚠️ 以下 ${demoted.length} 条原报「正选」，但该部落正选已满，已自动改为「替补」：</div>` +
+                            demoted.map(d => `<div>第 ${d.line} 行「${escapeHtml(d.text)}」→ 已转入替补（${escapeHtml(d.clan)}）</div>`).join('');
+                    }
+                    if (skipped.length) {
+                        html += `<div class="font-bold text-amber-100 pt-1">以下 ${skipped.length} 条未导入：</div>` +
+                            skipped.map(s => `<div>第 ${s.line} 行「${escapeHtml(s.text)}」：${escapeHtml(s.reason)}</div>`).join('');
+                    }
+                    box.innerHTML = html;
                 } else {
                     box.className = 'text-xs rounded-xl border border-emerald-700/60 bg-emerald-950/30 text-emerald-200 p-3 space-y-1 max-h-40 overflow-y-auto';
                     box.innerHTML = `<div class="font-bold">导入完成：成功写入 ${data.added} 条报名，已实时同步至全群。</div>`;
