@@ -297,11 +297,11 @@
                 <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-file-import"></i> 微信批量导入报名</h3>
                 <button onclick="closeImportModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <p class="text-xs text-slate-400">一键生成的模板会列出全部部落名称、游戏标签和报名要求。群友按提示接龙后，把结果整段复制粘贴到下面即可批量导入。</p>
+            <p class="text-xs text-slate-400">生成时会先同步网站最新配置，模板列出全部部落名称、段位/分组、游戏标签和报名要求。段位不会从游戏内自动抓取；管理员更新网站资料后重新生成即可，已发到群里的旧模板不会自动变化。</p>
             <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-xs text-slate-300 font-mono leading-relaxed">
                 #接龙<br>
                 多部落联赛报名接龙<br>
-                请查看下方各部落标签和要求，按「部落名 | 昵称 | 本数 | 正选/替补」接龙
+                请查看下方各部落段位、标签和要求，按「部落名 | 昵称 | 本数 | 正选/替补」接龙
             </div>
             <p class="text-[11px] text-slate-500">接龙里的说明和序号会自动忽略；本数可省略，角色可填正选或替补。每条写了部落名就按该部落导入；没写部落名时才使用下方默认部落。</p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1020,7 +1020,7 @@
                 ? `${clan.name} 联赛报名接龙（默认${roleLabel}，也可选其他部落）`
                 : '多部落联赛报名接龙';
             const clanList = clans.map(c =>
-                `- ${c.name} | ${c.tag || '无标签'} | 报名要求：${c.requirement || '无特别要求'}`
+                `- ${c.name} | 段位：${c.rank || c.category || '未设置'} | 分组：${c.category || '未设置'} | 标签：${c.tag || '无标签'} | 报名要求：${c.requirement || '无特别要求'}`
             );
             const fallback = clan
                 ? `未写部落名的报名默认归入「${clan.name}」；未写角色默认${roleLabel}。`
@@ -1028,7 +1028,7 @@
             return [
                 '#接龙',
                 title,
-                '全部可报名部落（名称 | 游戏标签 | 报名要求）：',
+                '全部可报名部落（名称 | 段位/分组 | 游戏标签 | 报名要求）：',
                 ...clanList,
                 fallback,
                 '接龙格式：部落全名 | 游戏昵称 | 本数 | 正选/替补',
@@ -1037,6 +1037,9 @@
         }
 
         async function generateRelayTemplate() {
+            const selectedClanId = document.getElementById('import-clan').value;
+            await fetchState(true);
+            refreshImportClanSelect(selectedClanId);
             const template = buildRelayTemplate();
             const box = document.getElementById('import-text');
             box.value = template;
@@ -1053,11 +1056,18 @@
             tip.innerHTML = `<div>${copied ? '已生成模板并复制到剪贴板' : '已生成模板（已全选，按 Ctrl/Cmd+C 复制）'}，发到微信群开启「接龙」。群友填好后，清空此框、粘贴接龙结果，再点「一键导入」。</div>`;
         }
 
-        function openImportModal() {
-            if (!isManager) return;
+        function refreshImportClanSelect(selectedClanId = '') {
             const sel = document.getElementById('import-clan');
+            if (!sel) return;
+            const retainedId = clans.some(c => c.id === selectedClanId) ? selectedClanId : '';
             sel.innerHTML = '<option value="">按每行行首的部落名识别</option>' +
                 clans.map(c => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('');
+            sel.value = retainedId;
+        }
+
+        function openImportModal() {
+            if (!isManager) return;
+            refreshImportClanSelect();
             document.getElementById('import-role').value = 'main';
             document.getElementById('import-text').value = '';
             const box = document.getElementById('import-result');
