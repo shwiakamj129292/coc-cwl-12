@@ -4,6 +4,14 @@ npm-debug.log*
 .gitignore
 .uploads
 .trae-html-share-packages
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.db*
+**/*.sqlite*
+**/*.dump
+**/*.bak
 *.md
 README*
 Dockerfile
