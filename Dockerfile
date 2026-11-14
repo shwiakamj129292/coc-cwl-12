@@ -22,8 +22,11 @@ COPY server.js ./
 COPY --from=build /app/dist ./dist
 
 # 数据目录（首次启动自动建库并写入种子名单）
-RUN mkdir -p /data
+# 非 root 运行：/data 归属内置 node 用户，容器被攻破时无法以此提权。
+RUN mkdir -p /data && chown -R node:node /data
 VOLUME ["/data"]
+
+USER node
 
 EXPOSE 3000
 
