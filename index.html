@@ -290,6 +290,47 @@
         </div>
     </div>
 
+    <!-- WeChat Batch Import Modal (Admin Only) -->
+    <div id="import-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-file-import"></i> 微信批量导入报名</h3>
+                <button onclick="closeImportModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">直接在微信群开「接龙」收集报名，把接龙结果整段复制粘贴到下面即可，一键全部写入。也支持手动按 <code class="text-amber-300">部落 | 昵称 | 本数 | 角色</code> 整理（后两项可省略）。</p>
+            <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-xs text-slate-300 font-mono leading-relaxed">
+                #接龙<br>
+                火焰部落 联赛报名（正选）<br>
+                1. 张三 19本<br>
+                2. 李四 18本 替补
+            </div>
+            <p class="text-[11px] text-slate-500">接龙里的「#接龙」「标题行」会自动忽略，序号也会去掉；「本数」可填 19本 / 18本 / 17本 / 16本 / 15本及以下；「角色」默认正选，可填正选或替补。若下面选了「默认部落」，行首的部落名可省略（同部落接龙推荐这样）。</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="text-xs text-slate-400 space-y-1 block">
+                    <span>默认部落（可留空，表示按每行行首的部落名识别）</span>
+                    <select id="import-clan" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500"></select>
+                </label>
+                <label class="text-xs text-slate-400 space-y-1 block">
+                    <span>默认角色</span>
+                    <select id="import-role" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500">
+                        <option value="main">正选</option>
+                        <option value="sub">替补</option>
+                    </select>
+                </label>
+            </div>
+            <button type="button" onclick="generateRelayTemplate()" class="w-full bg-cyan-700/40 hover:bg-cyan-700/60 border border-cyan-600/60 text-cyan-100 py-2.5 rounded-xl text-sm font-medium transition flex items-center justify-center space-x-2">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>生成微信接龙模板并复制（按上面的部落/角色）</span>
+            </button>
+            <textarea id="import-text" rows="8" spellcheck="false" placeholder="#接龙&#10;火焰部落 联赛报名（正选）&#10;1. 张三 19本&#10;2. 李四 18本 替补" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-amber-500"></textarea>
+            <div id="import-result" class="hidden text-xs rounded-xl border p-3 space-y-1 max-h-40 overflow-y-auto"></div>
+            <div class="flex space-x-3 pt-2 border-t border-slate-800">
+                <button type="button" onclick="closeImportModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
+                <button type="button" id="import-submit" onclick="submitBatchImport()" class="flex-1 bg-teal-600 hover:bg-teal-500 text-white py-2.5 rounded-xl text-sm font-bold transition shadow"><i class="fa-solid fa-cloud-arrow-up mr-1"></i> 一键导入</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Manager Login Modal -->
     <div id="manager-login-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
         <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-6 space-y-4 shadow-2xl">
@@ -659,6 +700,10 @@
                         <i class="fa-solid fa-layer-group"></i>
                         <span>段位管理</span>
                     </button>
+                    <button onclick="openImportModal()" class="bg-teal-600 hover:bg-teal-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1" title="把微信群的报名按固定格式粘贴进来，一键全部写入">
+                        <i class="fa-solid fa-file-import"></i>
+                        <span>微信批量导入</span>
+                    </button>
                     <button onclick="openHistoryModal()" class="bg-amber-600 hover:bg-amber-500 text-white text-xs px-3 py-2 rounded-lg font-medium shadow flex items-center space-x-1">
                         <i class="fa-solid fa-user-secret"></i>
                         <span>认证与修改审计</span>
@@ -966,6 +1011,86 @@
                 await fetchState(true);
                 alert('段位库已更新并同步至全群！');
             } catch (e) { alert('保存失败：' + (e.data && e.data.error || e.message)); }
+        }
+
+        // ===== 微信批量导入 =====
+        function buildRelayTemplate() {
+            const clan = clans.find(c => c.id === document.getElementById('import-clan').value);
+            const roleLabel = document.getElementById('import-role').value === 'sub' ? '替补' : '正选';
+            const title = clan ? `${clan.name} 联赛报名（${roleLabel}）` : '联赛报名接龙';
+            const guide = clan
+                ? '请按「昵称 本数」接龙，例如：张三 19本'
+                : '请按「部落 昵称 本数」接龙，例如：火焰部落 张三 19本';
+            return `#接龙\n${title}\n${guide}`;
+        }
+
+        async function generateRelayTemplate() {
+            const template = buildRelayTemplate();
+            const box = document.getElementById('import-text');
+            box.value = template;
+            const tip = document.getElementById('import-result');
+            tip.className = 'text-xs rounded-xl border border-cyan-700/60 bg-cyan-950/30 text-cyan-200 p-3 space-y-1';
+            let copied = false;
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(template);
+                    copied = true;
+                }
+            } catch (err) { copied = false; }
+            if (!copied) { box.focus(); box.select(); }
+            tip.innerHTML = `<div>${copied ? '已生成模板并复制到剪贴板' : '已生成模板（已全选，按 Ctrl/Cmd+C 复制）'}，发到微信群开启「接龙」。群友填好后，清空此框、粘贴接龙结果，再点「一键导入」。</div>`;
+        }
+
+        function openImportModal() {
+            if (!isManager) return;
+            const sel = document.getElementById('import-clan');
+            sel.innerHTML = '<option value="">按每行行首的部落名识别</option>' +
+                clans.map(c => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('');
+            document.getElementById('import-role').value = 'main';
+            document.getElementById('import-text').value = '';
+            const box = document.getElementById('import-result');
+            box.className = 'hidden text-xs rounded-xl border p-3 space-y-1 max-h-40 overflow-y-auto';
+            box.innerHTML = '';
+            document.getElementById('import-modal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('import-text').focus(), 50);
+        }
+        function closeImportModal() { document.getElementById('import-modal').classList.add('hidden'); }
+
+        async function submitBatchImport() {
+            if (!isManager) return;
+            const text = document.getElementById('import-text').value;
+            if (!text.trim()) { alert('请先粘贴要导入的报名内容。'); return; }
+            const btn = document.getElementById('import-submit');
+            const box = document.getElementById('import-result');
+            btn.disabled = true;
+            const original = btn.innerHTML;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> 正在导入...';
+            try {
+                const data = await api('/api/admin/import', {
+                    method: 'POST', auth: true,
+                    body: {
+                        text,
+                        clanId: document.getElementById('import-clan').value,
+                        role: document.getElementById('import-role').value
+                    }
+                });
+                await fetchState(true);
+                const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+                if (skipped.length) {
+                    box.className = 'text-xs rounded-xl border border-amber-700/60 bg-amber-950/30 text-amber-200 p-3 space-y-1 max-h-40 overflow-y-auto';
+                    box.innerHTML = `<div class="font-bold">成功导入 ${data.added} 条，以下 ${skipped.length} 条未导入：</div>` +
+                        skipped.map(s => `<div>第 ${s.line} 行「${escapeHtml(s.text)}」：${escapeHtml(s.reason)}</div>`).join('');
+                } else {
+                    box.className = 'text-xs rounded-xl border border-emerald-700/60 bg-emerald-950/30 text-emerald-200 p-3 space-y-1 max-h-40 overflow-y-auto';
+                    box.innerHTML = `<div class="font-bold">导入完成：成功写入 ${data.added} 条报名，已实时同步至全群。</div>`;
+                }
+            } catch (e) {
+                box.className = 'text-xs rounded-xl border border-rose-700/60 bg-rose-950/30 text-rose-200 p-3 space-y-1';
+                box.innerHTML = `<div>导入失败：${escapeHtml(e.data && e.data.error || e.message || '未知错误')}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
         }
 
         async function resetAllSignupsForNewMonth() {

@@ -803,7 +803,6 @@ test("capacity pruning deletes only records older than 3 months", async () => {
     ADMIN_PASSWORD: "prune-password-2026",
     STORAGE_LIMIT_BYTES: String(80 * 1024)
   };
-
   // 塞入一批「3 个月前」的旧记录，把用量推到 50% 阈值以上。
   const old = Date.now() - 120 * 24 * 60 * 60 * 1000;
   const statements = [];
@@ -847,4 +846,153 @@ test("capacity pruning deletes only records older than 3 months", async () => {
     "SELECT COUNT(*) AS n FROM entries WHERE created_at >= ?"
   ).bind(Date.now() - 90 * 24 * 60 * 60 * 1000).first();
   assert.equal(tooRecent.n, 45, "保护期内的记录不应被删（44 条预置 + 1 条新记录）");
+});
+
+test("admin can batch import WeChat signups in the fixed format", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "import-password-2026" };
+
+  // 未登录必须被拒绝。
+  let response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: "火焰部落 | 张三" })
+  });
+  assert.equal(response.status, 403);
+
+  const login = await readJson(await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.30" },
+    body: JSON.stringify({ password: env.ADMIN_PASSWORD })
+  }));
+  const adminHeaders = {
+    authorization: `Bearer ${login.adminToken}`,
+    "content-type": "application/json"
+  };
+
+  // 错误方法应被拒绝。
+  response = await runApi(onRequest, env, "/api/admin/import", { headers: adminHeaders });
+  assert.equal(response.status, 405);
+
+  // 混合格式：半角/全角分隔符、带本数与角色、未知部落、省略本数与角色。
+  response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      text: [
+        "火焰部落 | 张三 | 19本 | 正选",
+        "飘雪城｜李四｜18本｜替补",
+        "不存在的部落 | 王五",
+        "雪精灵 | 赵六"
+      ].join("\n")
+    })
+  });
+  assert.equal(response.status, 200);
+  const result = await readJson(response);
+  assert.equal(result.added, 3);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(result.skipped[0].line, 3);
+  assert.match(result.skipped[0].reason, /部落/);
+
+  // 指定默认部落 + 默认角色时，行首可省略部落名。
+  response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ clanId: "huoyan", role: "sub", text: "钱七 | 16本\n孙八" })
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await readJson(response)).added, 2);
+
+  const state = await readJson(await runApi(onRequest, env, "/api/state?full=1", {
+    headers: adminHeaders
+  }));
+  const huoyan = state.clans.find(clan => clan.id === "huoyan");
+  const piaoxue = state.clans.find(clan => clan.id === "piaoxue");
+  const xuejingling = state.clans.find(clan => clan.id === "xuejingling");
+  const zhang = huoyan.players.find(entry => entry.text === "张三 19本");
+  assert.ok(zhang, "带本数的正选应被写入对应部落");
+  assert.equal(zhang.ownerToken, "#SYS_PRESET");
+  assert.ok(piaoxue.subs.some(entry => entry.text === "李四 18本"));
+  assert.ok(xuejingling.players.some(entry => entry.text === "赵六"));
+  assert.ok(huoyan.subs.some(entry => entry.text === "钱七 16本"));
+  assert.ok(huoyan.subs.some(entry => entry.text === "孙八"));
+
+  // 满员时不应写入，并给出原因。
+  const fill = [];
+  for (let index = 0; index < 20; index += 1) {
+    fill.push({ clanId: "xiyang", role: "main", text: `溢出${index}` });
+  }
+  response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ text: fill.map(line => line.clanId + " | " + line.text + " | main").join("\n") })
+  });
+  assert.equal(response.status, 200);
+  const overflow = await readJson(response);
+  assert.ok(overflow.added > 0);
+  assert.ok(overflow.skipped.some(item => item.reason === "正选名额已满"));
+});
+
+test("admin can import a WeChat relay (接龙) paste directly", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "relay-password-2026" };
+
+  const login = await readJson(await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.40" },
+    body: JSON.stringify({ password: env.ADMIN_PASSWORD })
+  }));
+  const adminHeaders = {
+    authorization: `Bearer ${login.adminToken}`,
+    "content-type": "application/json"
+  };
+
+  // 同部落接龙：选了默认部落，接龙里只有序号 + 昵称 + 本数。
+  const relay = [
+    "#接龙",
+    "火焰部落 联赛报名（正选）",
+    "1. 张三 19本",
+    "2. 李四 18本 替补",
+    "3、王五",
+    "4. Peace & Love 17本"
+  ].join("\n");
+  let response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ clanId: "huoyan", text: relay })
+  });
+  assert.equal(response.status, 200);
+  const result = await readJson(response);
+  assert.equal(result.added, 4, "标题行与 #接龙 应被忽略，四条报名全部写入");
+  assert.equal(result.skipped.length, 0);
+
+  const state = await readJson(await runApi(onRequest, env, "/api/state?full=1", {
+    headers: adminHeaders
+  }));
+  const huoyan = state.clans.find(clan => clan.id === "huoyan");
+  assert.ok(huoyan.players.some(entry => entry.text === "张三 19本"));
+  assert.ok(huoyan.players.some(entry => entry.text === "王五"), "无本数的接龙条目也应写入");
+  assert.ok(huoyan.players.some(entry => entry.text === "Peace & Love 17本"), "含空格的昵称应完整保留");
+  assert.ok(huoyan.subs.some(entry => entry.text === "李四 18本"), "接龙里标注的替补应进入替补席");
+
+  // 跨部落接龙：不选默认部落，靠标题行 / 行首部落名识别。
+  const crossRelay = [
+    "#接龙",
+    "联赛报名",
+    "1. 夕阳之秋 赵六 16本",
+    "2. 雪精灵 孙七 15本及以下"
+  ].join("\n");
+  response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ text: crossRelay })
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await readJson(response)).added, 2);
+
+  const state2 = await readJson(await runApi(onRequest, env, "/api/state?full=1", {
+    headers: adminHeaders
+  }));
+  assert.ok(state2.clans.find(clan => clan.id === "xiyang").players.some(entry => entry.text === "赵六 16本"));
+  assert.ok(state2.clans.find(clan => clan.id === "xuejingling").players.some(entry => entry.text === "孙七 15本及以下"));
 });
