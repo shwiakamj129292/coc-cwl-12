@@ -38,6 +38,7 @@ export default {
     headers.set("Content-Security-Policy", HTML_CSP);
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-Frame-Options", "DENY");
+    headers.set("Strict-Transport-Security", "max-age=31536000");
     headers.set("Referrer-Policy", "no-referrer");
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     headers.set("Cross-Origin-Opener-Policy", "same-origin");

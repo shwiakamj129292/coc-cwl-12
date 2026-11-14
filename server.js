@@ -481,6 +481,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
+  // 仅在 HTTPS 下由浏览器生效；HTTP 部署（如本地 8000 端口）会被忽略，不影响功能。
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   // 与 Cloudflare Worker 版一致的 CSP：页面样式/图标均为本站静态资源，
   // 内联脚本与 onclick 仍需要 unsafe-inline；其余面尽量收紧。

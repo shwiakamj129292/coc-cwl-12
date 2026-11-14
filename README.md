@@ -68,3 +68,22 @@ Docker 首次部署必须在 `.env` 或环境中提供强 `ADMIN_PASSWORD`，不
 4. **接口现状**：管理员接口用 Bearer 会话令牌鉴权（非 Cookie，天然免疫 CSRF）；写操作有 IP 级限速；
    设备令牌由服务端签发登记，伪造令牌无法认领/篡改报名；所有 SQL 均使用参数绑定（无注入）。
    这些机制在**未执行 `0002` 迁移**时会降级放行，因此请务必按上文完成迁移。
+
+## 安全审计结论（2026-11）
+
+已完整核对 Worker / Node 后端、前端页面、部署配置与本仓库全部提交：
+
+- **未发现可直接利用的漏洞**：SQL 全部参数绑定（无注入）；管理员接口用 Bearer 会话令牌（非 Cookie，免疫 CSRF）；
+  报名修改 / 退赛校验设备令牌归属（无越权）；前端所有动态内容经 `escapeHtml` 转义（无存储型 XSS）；错误响应不回传内部细节（无信息泄露）。
+- **Git 历史清洁**：本仓库当前全部提交对象中不存在 `.env`、数据库文件、私钥或密钥；`data/*.db`、`.env`、`dist/` 已忽略。
+  此前被提交的 `.trae-html-share-packages/`（整站源码压缩副本）已从版本库移除并加入忽略，避免重复源码与被误加敏感内容。
+- **本轮加固**：全站响应新增 `Strict-Transport-Security`（HSTS）；Docker 改为以非 root 的 `node` 用户运行，`/data` 归属该用户；
+  Compose 增加 `no-new-privileges:true`。
+
+仍存在的**已知取舍**（非缺陷，按需处理）：
+
+1. 页面 CSP 必须保留 `script-src 'unsafe-inline'`（页面使用内联 `onclick`），XSS 二次防线受限，因而更依赖前端的 `escapeHtml`。
+2. 免费版 Workers CPU 预算有限，PBKDF2 迭代仅 10000 次，务必使用强密码。
+3. 限流为 IP 级；未执行 `0002` 迁移时会降级放行。
+4. `wrangler.jsonc` 中的 `database_id` 随仓库公开（仅 ID，凭它无法访问数据）。
+5. 生产必须启用 HTTPS（`workers.dev` 自带；自建 Docker 请前置反向代理配置 TLS），否则密码与令牌会明文传输。

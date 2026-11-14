@@ -8,3 +8,5 @@ dist/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+# Trae 分享包：包含整站源码的压缩副本，属于本地生成物，不纳入版本库。
+.trae-html-share-packages/

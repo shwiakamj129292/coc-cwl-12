@@ -4,6 +4,9 @@ services:
     image: coc-cwl:latest
     container_name: coc-cwl
     restart: unless-stopped
+    # 禁止进程通过 setuid 等方式提权。
+    security_opt:
+      - "no-new-privileges:true"
     ports:
       # 宿主机 8000 -> 容器 3000，可按需修改左侧端口
       - "8000:3000"
