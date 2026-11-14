@@ -31,6 +31,9 @@ const ROOT = __dirname;
 const MAX_BODY = 64 * 1024; // 64KB
 const MAX_SUBS_PER_CLAN = 30;
 const ADMIN_LOG_TOKEN = '#ADMIN';
+// 微信批量导入写入的报名归属该标记：没有任何设备令牌能认领，
+// 因此只能由管理员维护（与系统预置名单一致）。
+const IMPORT_OWNER_TOKEN = '#SYS_PRESET';
 const ALLOWED_TH = new Set(['', '19本', '18本', '17本', '16本', '15本及以下']);
 
 // 展示用时间统一按马来西亚时区（UTC+8）格式化。
@@ -214,6 +217,128 @@ function isValidDeviceToken(token) {
   if (!legacy) return false;
   registerDeviceToken(token);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// 微信批量导入：解析固定格式的多行文本
+// 兼容两种来源：
+//   1) 手动按「部落 | 昵称 | 本数 | 角色」整理（每行一条，后两项可省略）；
+//   2) 直接粘贴微信群「接龙」结果（带序号，如「1. 张三 19本」）：
+//      自动忽略 #接龙、标题行，去掉序号，按空格解析「昵称 本数 角色」。
+// 若请求里已指定默认部落，行首可省略部落名。
+// 「本数」取 ALLOWED_TH，「角色」默认正选（正选/替补）。
+// ---------------------------------------------------------------------------
+const IMPORT_SEPARATOR = /[|｜\t]+/;
+const IMPORT_NUMBER_PREFIX = /^\s*\d+\s*[.、．)）:：]\s*/;
+const IMPORT_ROLE_ALIASES = {
+  '正选': 'main', '主选': 'main', '主力': 'main', 'main': 'main',
+  '替补': 'sub', '候补': 'sub', '备选': 'sub', 'sub': 'sub'
+};
+
+function normalizeClanKey(value) {
+  return String(value || '').replace(/[\s（）()【】\[\]！!·.。]/g, '').toLowerCase();
+}
+
+function resolveClan(token, clans) {
+  const raw = String(token || '').trim();
+  const key = normalizeClanKey(raw);
+  if (!key) return null;
+  const byId = clans.find(c => String(c.id).toLowerCase() === raw.toLowerCase());
+  if (byId) return byId;
+  const exact = clans.find(c => normalizeClanKey(c.name) === key);
+  if (exact) return exact;
+  return clans.find(c => {
+    const name = normalizeClanKey(c.name);
+    return name.includes(key) || key.includes(name);
+  }) || null;
+}
+
+// 行首若带部落名则剥离（兼容「部落 昵称」与「部落 | 昵称」两种写法）。
+function stripLeadingClan(body, clans) {
+  const tokens = body.split(/[\s|｜\t]+/).filter(Boolean);
+  for (let count = 1; count <= Math.min(3, tokens.length); count += 1) {
+    const clan = resolveClan(tokens.slice(0, count).join(' '), clans);
+    if (clan) return { clan, rest: tokens.slice(count).join(' ') };
+  }
+  return null;
+}
+
+// 解析单条内容：优先按分隔符切分；否则按「微信接龙」的空格写法，
+// 从末尾剥离「角色」「本数」，余下即为昵称（允许昵称含空格）。
+function parseEntryFields(body) {
+  if (IMPORT_SEPARATOR.test(body)) {
+    const parts = body.split(IMPORT_SEPARATOR).map(part => part.trim()).filter(Boolean);
+    if (!parts.length) return null;
+    let th = '';
+    let role = null;
+    for (const extra of parts.slice(1)) {
+      if (!th && ALLOWED_TH.has(extra) && extra) { th = extra; continue; }
+      const mapped = IMPORT_ROLE_ALIASES[extra] || IMPORT_ROLE_ALIASES[extra.toLowerCase()];
+      if (mapped) role = mapped;
+    }
+    return { name: parts[0], th, role };
+  }
+  const tokens = body.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+  let th = '';
+  let role = null;
+  while (tokens.length > 1) {
+    const last = tokens[tokens.length - 1];
+    const mapped = IMPORT_ROLE_ALIASES[last] || IMPORT_ROLE_ALIASES[last.toLowerCase()];
+    if (mapped && !role) { role = mapped; tokens.pop(); continue; }
+    if (ALLOWED_TH.has(last) && last && !th) { th = last; tokens.pop(); continue; }
+    break;
+  }
+  return { name: tokens.join(' ').trim(), th, role };
+}
+
+function parseImportLines(text, clans, defaultClanId, defaultRole) {
+  const defaultClan = defaultClanId ? clans.find(c => c.id === defaultClanId) || null : null;
+  const rows = String(text || '').split(/\r?\n/)
+    .map((raw, index) => ({ raw, lineNo: index + 1 }))
+    .filter(row => row.raw.trim() && !row.raw.trim().startsWith('#'));
+
+  // 出现带序号的行即视为「微信接龙」格式：无序号的行按标题处理并忽略。
+  const isRelay = rows.some(row => IMPORT_NUMBER_PREFIX.test(row.raw.trim()));
+  let headerClan = null;
+  const parsed = [];
+
+  for (const { raw, lineNo } of rows) {
+    const trimmed = raw.trim();
+    if (isRelay && !IMPORT_NUMBER_PREFIX.test(trimmed)) {
+      if (!defaultClan && !headerClan) {
+        headerClan = resolveClan(trimmed, clans) ||
+          resolveClan(trimmed.split(/[\s|｜\t]+/)[0], clans);
+      }
+      continue;
+    }
+    const body = trimmed.replace(IMPORT_NUMBER_PREFIX, '').trim();
+    if (!body) continue;
+
+    let clan = defaultClan || headerClan;
+    let rest = body;
+    if (!clan) {
+      const stripped = stripLeadingClan(body, clans);
+      if (stripped) { clan = stripped.clan; rest = stripped.rest; }
+    }
+    if (!clan) {
+      parsed.push({ line: lineNo, raw: trimmed, ok: false, reason: '未找到对应部落' });
+      continue;
+    }
+    const fields = parseEntryFields(rest);
+    const name = fields ? fields.name.slice(0, 40) : '';
+    if (!name) {
+      parsed.push({ line: lineNo, raw: trimmed, ok: false, reason: '昵称为空' });
+      continue;
+    }
+    const role = fields.role || defaultRole;
+    parsed.push({
+      line: lineNo, raw: trimmed, ok: true,
+      clanId: clan.id, clanName: clan.name, name, th: fields.th,
+      role: role === 'sub' ? 'sub' : 'main'
+    });
+  }
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +659,42 @@ const server = http.createServer(async (req, res) => {
       addLog('EDIT', name, '管理员更新了部落信息', '管理员', ADMIN_LOG_TOKEN);
       bumpRev();
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (p === '/api/admin/import' && method === 'POST') {
+      const body = await readBody(req);
+      const clanRows = db.prepare('SELECT id, name, capacity FROM clans ORDER BY sort ASC').all();
+      const parsed = parseImportLines(body.text, clanRows, String(body.clanId || ''), body.role === 'sub' ? 'sub' : 'main');
+      const skipped = parsed.filter(r => !r.ok).map(r => ({ line: r.line, text: r.raw, reason: r.reason }));
+      const now = Date.now();
+      let added = 0;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const item of parsed) {
+          if (!item.ok) continue;
+          const text = item.th ? `${item.name} ${item.th}` : item.name;
+          const limit = item.role === 'sub'
+            ? MAX_SUBS_PER_CLAN
+            : db.prepare('SELECT capacity FROM clans WHERE id = ?').get(item.clanId).capacity;
+          const count = db.prepare(
+            item.role === 'sub'
+              ? "SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'sub'"
+              : "SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'main'"
+          ).get(item.clanId).n;
+          if (count >= limit) {
+            skipped.push({ line: item.line, text: item.raw, reason: item.role === 'sub' ? '替补席位已满' : '正选名额已满' });
+            continue;
+          }
+          db.prepare('INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) VALUES(?,?,?,?,?,?)')
+            .run('e_' + crypto.randomBytes(8).toString('hex'), item.clanId, item.role, text, IMPORT_OWNER_TOKEN, now);
+          db.prepare('INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?,?,?,?,?,?)')
+            .run(now, 'ADD', item.clanName, `批量导入【${item.role === 'sub' ? '替补' : '正选'}】：${text}`, '管理员', ADMIN_LOG_TOKEN);
+          added++;
+        }
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      if (added > 0) bumpRev();
+      return sendJson(res, 200, { ok: true, added, total: parsed.length, skipped });
     }
 
     if (p === '/api/reset' && method === 'POST') {
