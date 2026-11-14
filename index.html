@@ -292,19 +292,18 @@
 
     <!-- WeChat Batch Import Modal (Admin Only) -->
     <div id="import-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
-        <div class="bg-slate-900 border border-slate-700 w-full max-w-xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh]">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-xl rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto">
             <div class="flex justify-between items-center border-b border-slate-800 pb-3">
                 <h3 class="font-bold text-base text-amber-400"><i class="fa-solid fa-file-import"></i> 微信批量导入报名</h3>
                 <button onclick="closeImportModal()" class="text-slate-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <p class="text-xs text-slate-400">直接在微信群开「接龙」收集报名，把接龙结果整段复制粘贴到下面即可，一键全部写入。也支持手动按 <code class="text-amber-300">部落 | 昵称 | 本数 | 角色</code> 整理（后两项可省略）。</p>
+            <p class="text-xs text-slate-400">一键生成的模板会列出全部部落名称、游戏标签和报名要求。群友按提示接龙后，把结果整段复制粘贴到下面即可批量导入。</p>
             <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-xs text-slate-300 font-mono leading-relaxed">
                 #接龙<br>
-                火焰部落 联赛报名（正选）<br>
-                1. 张三 19本<br>
-                2. 李四 18本 替补
+                多部落联赛报名接龙<br>
+                请查看下方各部落标签和要求，按「部落名 | 昵称 | 本数 | 正选/替补」接龙
             </div>
-            <p class="text-[11px] text-slate-500">接龙里的「#接龙」「标题行」会自动忽略，序号也会去掉；「本数」可填 19本 / 18本 / 17本 / 16本 / 15本及以下；「角色」默认正选，可填正选或替补。若下面选了「默认部落」，行首的部落名可省略（同部落接龙推荐这样）。</p>
+            <p class="text-[11px] text-slate-500">接龙里的说明和序号会自动忽略；本数可省略，角色可填正选或替补。每条写了部落名就按该部落导入；没写部落名时才使用下方默认部落。</p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <label class="text-xs text-slate-400 space-y-1 block">
                     <span>默认部落（可留空，表示按每行行首的部落名识别）</span>
@@ -320,9 +319,9 @@
             </div>
             <button type="button" onclick="generateRelayTemplate()" class="w-full bg-cyan-700/40 hover:bg-cyan-700/60 border border-cyan-600/60 text-cyan-100 py-2.5 rounded-xl text-sm font-medium transition flex items-center justify-center space-x-2">
                 <i class="fa-solid fa-wand-magic-sparkles"></i>
-                <span>生成微信接龙模板并复制（按上面的部落/角色）</span>
+                <span>生成全部部落接龙模板并复制</span>
             </button>
-            <textarea id="import-text" rows="8" spellcheck="false" placeholder="#接龙&#10;火焰部落 联赛报名（正选）&#10;1. 张三 19本&#10;2. 李四 18本 替补" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-amber-500"></textarea>
+            <textarea id="import-text" rows="8" spellcheck="false" placeholder="#接龙&#10;多部落联赛报名接龙&#10;请查看各部落标签和要求&#10;1. 夕阳之秋 (晋级组) | 张三 | 19本 | 正选" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-amber-500"></textarea>
             <div id="import-result" class="hidden text-xs rounded-xl border p-3 space-y-1 max-h-40 overflow-y-auto"></div>
             <div class="flex space-x-3 pt-2 border-t border-slate-800">
                 <button type="button" onclick="closeImportModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-sm font-medium transition">取消</button>
@@ -1017,11 +1016,24 @@
         function buildRelayTemplate() {
             const clan = clans.find(c => c.id === document.getElementById('import-clan').value);
             const roleLabel = document.getElementById('import-role').value === 'sub' ? '替补' : '正选';
-            const title = clan ? `${clan.name} 联赛报名（${roleLabel}）` : '联赛报名接龙';
-            const guide = clan
-                ? '请按「昵称 本数」接龙，例如：张三 19本'
-                : '请按「部落 昵称 本数」接龙，例如：火焰部落 张三 19本';
-            return `#接龙\n${title}\n${guide}`;
+            const title = clan
+                ? `${clan.name} 联赛报名接龙（默认${roleLabel}，也可选其他部落）`
+                : '多部落联赛报名接龙';
+            const clanList = clans.map(c =>
+                `- ${c.name} | ${c.tag || '无标签'} | 报名要求：${c.requirement || '无特别要求'}`
+            );
+            const fallback = clan
+                ? `未写部落名的报名默认归入「${clan.name}」；未写角色默认${roleLabel}。`
+                : `每条请写部落全名；未写角色默认${roleLabel}。`;
+            return [
+                '#接龙',
+                title,
+                '全部可报名部落（名称 | 游戏标签 | 报名要求）：',
+                ...clanList,
+                fallback,
+                '接龙格式：部落全名 | 游戏昵称 | 本数 | 正选/替补',
+                '示例：夕阳之秋 (晋级组) | 张三 | 19本 | 正选'
+            ].join('\n');
         }
 
         async function generateRelayTemplate() {
