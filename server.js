@@ -701,35 +701,53 @@ const server = http.createServer(async (req, res) => {
       const clanRows = db.prepare('SELECT id, name, capacity FROM clans ORDER BY sort ASC').all();
       const parsed = parseImportLines(body.text, clanRows, String(body.clanId || ''), body.role === 'sub' ? 'sub' : 'main');
       const skipped = parsed.filter(r => !r.ok).map(r => ({ line: r.line, text: r.raw, reason: r.reason }));
+      const demoted = [];
       const now = Date.now();
+      const countRole = (clanId, role) =>
+        db.prepare('SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = ?').get(clanId, role).n;
+      const insertEntry = (clanId, role, text) =>
+        db.prepare('INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) VALUES(?,?,?,?,?,?)')
+          .run('e_' + crypto.randomBytes(8).toString('hex'), clanId, role, text, IMPORT_OWNER_TOKEN, now);
+      const logImport = (clanName, details) =>
+        db.prepare('INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?,?,?,?,?,?)')
+          .run(now, 'ADD', clanName, details, '管理员', ADMIN_LOG_TOKEN);
       let added = 0;
       db.exec('BEGIN IMMEDIATE');
       try {
         for (const item of parsed) {
           if (!item.ok) continue;
           const text = item.th ? `${item.name} ${item.th}` : item.name;
-          const limit = item.role === 'sub'
-            ? MAX_SUBS_PER_CLAN
-            : db.prepare('SELECT capacity FROM clans WHERE id = ?').get(item.clanId).capacity;
-          const count = db.prepare(
-            item.role === 'sub'
-              ? "SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'sub'"
-              : "SELECT COUNT(*) AS n FROM entries WHERE clan_id = ? AND role = 'main'"
-          ).get(item.clanId).n;
-          if (count >= limit) {
-            skipped.push({ line: item.line, text: item.raw, reason: item.role === 'sub' ? '替补席位已满' : '正选名额已满' });
+          if (item.role === 'sub') {
+            if (countRole(item.clanId, 'sub') >= MAX_SUBS_PER_CLAN) {
+              skipped.push({ line: item.line, text: item.raw, reason: '替补席位已满' });
+              continue;
+            }
+            insertEntry(item.clanId, 'sub', text);
+            logImport(item.clanName, `批量导入【替补】：${text}`);
+            added++;
             continue;
           }
-          db.prepare('INSERT INTO entries(id, clan_id, role, name, owner_token, created_at) VALUES(?,?,?,?,?,?)')
-            .run('e_' + crypto.randomBytes(8).toString('hex'), item.clanId, item.role, text, IMPORT_OWNER_TOKEN, now);
-          db.prepare('INSERT INTO logs(time, type, clan, details, operator, token) VALUES(?,?,?,?,?,?)')
-            .run(now, 'ADD', item.clanName, `批量导入【${item.role === 'sub' ? '替补' : '正选'}】：${text}`, '管理员', ADMIN_LOG_TOKEN);
+          const capacity = db.prepare('SELECT capacity FROM clans WHERE id = ?').get(item.clanId).capacity;
+          if (countRole(item.clanId, 'main') < capacity) {
+            insertEntry(item.clanId, 'main', text);
+            logImport(item.clanName, `批量导入【正选】：${text}`);
+            added++;
+            continue;
+          }
+          // 正选名额已满 → 自动改报替补；替补也满才跳过。
+          if (countRole(item.clanId, 'sub') >= MAX_SUBS_PER_CLAN) {
+            skipped.push({ line: item.line, text: item.raw, reason: '正选与替补均已满' });
+            continue;
+          }
+          insertEntry(item.clanId, 'sub', text);
+          logImport(item.clanName, `批量导入【正选已满自动转替补】：${text}`);
           added++;
+          demoted.push({ line: item.line, text: item.raw, clan: item.clanName, name: text });
         }
         db.exec('COMMIT');
       } catch (e) { db.exec('ROLLBACK'); throw e; }
       if (added > 0) bumpRev();
-      return sendJson(res, 200, { ok: true, added, total: parsed.length, skipped });
+      return sendJson(res, 200, { ok: true, added, total: parsed.length, skipped, demoted });
     }
 
     if (p === '/api/reset' && method === 'POST') {

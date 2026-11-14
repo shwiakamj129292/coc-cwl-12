@@ -917,7 +917,7 @@ test("admin can batch import WeChat signups in the fixed format", async () => {
   assert.ok(huoyan.subs.some(entry => entry.text === "钱七 16本"));
   assert.ok(huoyan.subs.some(entry => entry.text === "孙八"));
 
-  // 满员时不应写入，并给出原因。
+  // 正选满员时自动改为替补，并回报被改的条目（替补仍有空位则不跳过）。
   const fill = [];
   for (let index = 0; index < 20; index += 1) {
     fill.push({ clanId: "xiyang", role: "main", text: `溢出${index}` });
@@ -930,7 +930,25 @@ test("admin can batch import WeChat signups in the fixed format", async () => {
   assert.equal(response.status, 200);
   const overflow = await readJson(response);
   assert.ok(overflow.added > 0);
-  assert.ok(overflow.skipped.some(item => item.reason === "正选名额已满"));
+  assert.ok(Array.isArray(overflow.demoted) && overflow.demoted.length > 0, "正选满员应自动转为替补");
+  assert.ok(overflow.demoted.every(item => item.clan === "夕阳之秋 (晋级组)"));
+  assert.equal(overflow.skipped.length, 0, "替补仍有空位时不应跳过任何条目");
+
+  // 替补也满时，剩余条目才会被跳过并给出原因。
+  const fill2 = [];
+  for (let index = 0; index < 20; index += 1) {
+    fill2.push(`xiyang | 溢出二${index} | main`);
+  }
+  response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ text: fill2.join("\n") })
+  });
+  assert.equal(response.status, 200);
+  const overflow2 = await readJson(response);
+  assert.equal(overflow2.demoted.length, 12, "替补剩余 12 个空位应被自动转替补填满");
+  assert.equal(overflow2.skipped.length, 8);
+  assert.ok(overflow2.skipped.every(item => item.reason === "正选与替补均已满"));
 });
 
 test("admin can import a WeChat relay (接龙) paste directly", async () => {
@@ -1003,4 +1021,56 @@ test("admin can import a WeChat relay (接龙) paste directly", async () => {
   }));
   assert.ok(state2.clans.find(clan => clan.id === "xiyang").players.some(entry => entry.text === "赵六 16本"));
   assert.ok(state2.clans.find(clan => clan.id === "xuejingling").subs.some(entry => entry.text === "孙七 15本及以下"));
+});
+
+test("import auto-demotes overflow main signups to substitutes and reports each change", async () => {
+  const { onRequest } = await import(workerUrl);
+  const env = { DB: new TestD1(), ADMIN_PASSWORD: "demote-password-2026" };
+
+  const login = await readJson(await runApi(onRequest, env, "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.60" },
+    body: JSON.stringify({ password: env.ADMIN_PASSWORD })
+  }));
+  const adminHeaders = {
+    authorization: `Bearer ${login.adminToken}`,
+    "content-type": "application/json"
+  };
+
+  // 夕阳之秋正选上限 15、种子已有 13 人：再导入 5 条正选 → 2 条入正选、3 条自动转替补。
+  const response = await runApi(onRequest, env, "/api/admin/import", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      text: [
+        "xiyang | 甲 | 19本 | 正选",
+        "xiyang | 乙 | 19本 | 正选",
+        "xiyang | 丙 | 19本 | 正选",
+        "xiyang | 丁 | 19本 | 正选",
+        "xiyang | 戊 | 19本 | 正选"
+      ].join("\n")
+    })
+  });
+  assert.equal(response.status, 200);
+  const result = await readJson(response);
+  assert.equal(result.added, 5, "五条都应成功写入（含自动转替补）");
+  assert.equal(result.skipped.length, 0);
+  assert.equal(result.demoted.length, 3, "超出正选上限的 3 条应自动转为替补");
+  assert.ok(result.demoted.every(item => item.clan === "夕阳之秋 (晋级组)"));
+  assert.deepEqual(
+    result.demoted.map(item => item.name).sort(),
+    ["丙 19本", "丁 19本", "戊 19本"].sort(),
+    "应准确回报被自动转替补的条目"
+  );
+
+  const state = await readJson(await runApi(onRequest, env, "/api/state?full=1", {
+    headers: adminHeaders
+  }));
+  const xiyang = state.clans.find(clan => clan.id === "xiyang");
+  assert.equal(xiyang.players.length, 15, "正选应恰好填满到上限 15");
+  assert.ok(xiyang.players.some(entry => entry.text === "甲 19本"));
+  assert.ok(xiyang.players.some(entry => entry.text === "乙 19本"));
+  assert.ok(xiyang.subs.some(entry => entry.text === "丙 19本"));
+  assert.ok(xiyang.subs.some(entry => entry.text === "丁 19本"));
+  assert.ok(xiyang.subs.some(entry => entry.text === "戊 19本"));
 });
