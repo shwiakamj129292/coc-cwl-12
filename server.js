@@ -410,6 +410,32 @@ function loginRateLimited(ip) {
   return rec.count > 8;
 }
 
+function requestIp(req) {
+  return req.socket.remoteAddress || 'unknown';
+}
+
+// 通用 IP 级滑动窗口限速（写操作防刷），与 Worker 版行为一致。
+// 自建版没有 Cloudflare 的 cf-connecting-ip，直接取 socket 远端地址；
+// 若部署在反向代理后，请自行按其转发头调整 requestIp。
+const ipRateBuckets = new Map(); // `${scope}:${ip}` -> { count, resetAt }
+function ipRateLimited(scope, ip, limit, windowMs) {
+  const now = Date.now();
+  // 桶数量过大时顺带清理已过期的条目，避免长期运行后无界增长。
+  if (ipRateBuckets.size > 5000) {
+    for (const [key, rec] of ipRateBuckets) {
+      if (now > rec.resetAt) ipRateBuckets.delete(key);
+    }
+  }
+  const key = `${scope}:${ip}`;
+  const rec = ipRateBuckets.get(key);
+  if (!rec || now > rec.resetAt) {
+    ipRateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return false;
+  }
+  rec.count += 1;
+  return rec.count > limit;
+}
+
 // ---------------------------------------------------------------------------
 // 状态读取
 // ---------------------------------------------------------------------------
@@ -454,6 +480,16 @@ const server = http.createServer(async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // 与 Cloudflare Worker 版一致的 CSP：页面样式/图标均为本站静态资源，
+  // 内联脚本与 onclick 仍需要 unsafe-inline；其余面尽量收紧。
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; " +
+      "form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+      "font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self'"
+  );
 
   try {
     // ---------- 静态资源 ----------
@@ -483,6 +519,9 @@ const server = http.createServer(async (req, res) => {
 
     // ---------- 设备令牌 ----------
     if (p === '/api/device' && method === 'POST') {
+      if (ipRateLimited('device', requestIp(req), 30, 10 * 60 * 1000)) {
+        return sendJson(res, 429, { error: '请求过于频繁，请稍后再试' });
+      }
       const token = '#U-' + crypto.randomBytes(8).toString('hex').toUpperCase();
       registerDeviceToken(token);
       return sendJson(res, 200, { deviceToken: token });
@@ -490,7 +529,7 @@ const server = http.createServer(async (req, res) => {
 
     // ---------- 管理端登录 ----------
     if (p === '/api/admin/login' && method === 'POST') {
-      const ip = req.socket.remoteAddress || 'unknown';
+      const ip = requestIp(req);
       if (loginRateLimited(ip)) return sendJson(res, 429, { error: '尝试次数过多，请稍后再试' });
       const body = await readBody(req);
       const stored = getSetting('adminPwd');
@@ -521,6 +560,9 @@ const server = http.createServer(async (req, res) => {
 
     // ---------- 用户报名 ----------
     if (p === '/api/signup' && method === 'POST') {
+      if (ipRateLimited('signup', requestIp(req), 30, 10 * 60 * 1000)) {
+        return sendJson(res, 429, { error: '提交过于频繁，请稍后再试' });
+      }
       const actor = getDeviceToken(req);
       if (!actor) return sendJson(res, 400, { error: '缺少或非法的设备令牌' });
       if (!isValidDeviceToken(actor)) return sendJson(res, 403, { error: 'invalid_device_token', message: '设备令牌已失效，请重新获取后重试' });
@@ -773,7 +815,9 @@ const server = http.createServer(async (req, res) => {
         code: 'DB_READ_ONLY'
       });
     }
-    return sendJson(res, 500, { error: e.message || '服务器内部错误' });
+    // 不把内部异常信息（SQL 报错、文件路径等）回传给客户端，避免信息泄露；
+    // 详情只写服务端日志，客户端统一收到通用错误。
+    return sendJson(res, 500, { error: '服务器内部错误' });
   }
 });
 
