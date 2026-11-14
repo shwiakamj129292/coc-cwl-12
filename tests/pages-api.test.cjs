@@ -954,7 +954,9 @@ test("admin can import a WeChat relay (接龙) paste directly", async () => {
     "1. 张三 19本",
     "2. 李四 18本 替补",
     "3、王五",
-    "4. Peace & Love 17本"
+    "4. Peace & Love 17本",
+    "5. 雪精灵 | 周八 | 18本 | 替补",
+    "6. 雪 | 18本"
   ].join("\n");
   let response = await runApi(onRequest, env, "/api/admin/import", {
     method: "POST",
@@ -963,7 +965,7 @@ test("admin can import a WeChat relay (接龙) paste directly", async () => {
   });
   assert.equal(response.status, 200);
   const result = await readJson(response);
-  assert.equal(result.added, 4, "标题行与 #接龙 应被忽略，四条报名全部写入");
+  assert.equal(result.added, 6, "标题行与 #接龙 应被忽略，六条报名全部写入");
   assert.equal(result.skipped.length, 0);
 
   const state = await readJson(await runApi(onRequest, env, "/api/state?full=1", {
@@ -974,13 +976,19 @@ test("admin can import a WeChat relay (接龙) paste directly", async () => {
   assert.ok(huoyan.players.some(entry => entry.text === "王五"), "无本数的接龙条目也应写入");
   assert.ok(huoyan.players.some(entry => entry.text === "Peace & Love 17本"), "含空格的昵称应完整保留");
   assert.ok(huoyan.subs.some(entry => entry.text === "李四 18本"), "接龙里标注的替补应进入替补席");
+  assert.ok(huoyan.players.some(entry => entry.text === "雪 18本"), "默认部落下的昵称不能因包含部落名片段而误分流");
+  assert.ok(state.clans.find(clan => clan.id === "xuejingling").subs.some(entry => entry.text === "周八 18本"), "明确写出的部落应覆盖默认部落");
 
-  // 跨部落接龙：不选默认部落，靠标题行 / 行首部落名识别。
+  // 全部落标签与要求作为说明行展示，但不能被误识别成报名或默认部落。
   const crossRelay = [
     "#接龙",
-    "联赛报名",
-    "1. 夕阳之秋 赵六 16本",
-    "2. 雪精灵 孙七 15本及以下"
+    "多部落联赛报名接龙",
+    "全部可报名部落（名称 | 标签 | 要求）：",
+    "- 夕阳之秋 (晋级组) | #2PRCUGGJJ | 要求：至少传奇2段位",
+    "- 雪精灵 | #2GPUCRVR2 | 要求：19本、18本",
+    "接龙格式：部落全名 | 游戏昵称 | 本数 | 正选/替补",
+    "1. 夕阳之秋 (晋级组) | 赵六 | 16本 | 正选",
+    "2. 雪精灵 | 孙七 | 15本及以下 | 替补"
   ].join("\n");
   response = await runApi(onRequest, env, "/api/admin/import", {
     method: "POST",
@@ -994,5 +1002,5 @@ test("admin can import a WeChat relay (接龙) paste directly", async () => {
     headers: adminHeaders
   }));
   assert.ok(state2.clans.find(clan => clan.id === "xiyang").players.some(entry => entry.text === "赵六 16本"));
-  assert.ok(state2.clans.find(clan => clan.id === "xuejingling").players.some(entry => entry.text === "孙七 15本及以下"));
+  assert.ok(state2.clans.find(clan => clan.id === "xuejingling").subs.some(entry => entry.text === "孙七 15本及以下"));
 });

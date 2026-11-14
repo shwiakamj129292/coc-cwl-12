@@ -671,6 +671,14 @@ function normalizeClanKey(value) {
   return String(value || "").replace(/[\s（）()【】\[\]！!·.。]/g, "").toLowerCase();
 }
 
+function resolveClanExact(token, clans) {
+  const raw = String(token || "").trim();
+  const key = normalizeClanKey(raw);
+  if (!key) return null;
+  return clans.find(c => String(c.id).toLowerCase() === raw.toLowerCase()) ||
+    clans.find(c => normalizeClanKey(c.name) === key) || null;
+}
+
 function resolveClan(token, clans) {
   const raw = String(token || "").trim();
   const key = normalizeClanKey(raw);
@@ -685,9 +693,28 @@ function resolveClan(token, clans) {
   }) || null;
 }
 
+function resolveHeaderClan(line, clans) {
+  const exact = resolveClanExact(line, clans);
+  if (exact) return exact;
+  const normalized = normalizeClanKey(line);
+  return clans.find(c => {
+    const name = normalizeClanKey(c.name);
+    return normalized.startsWith(name) && /(联赛报名|报名接龙|联赛接龙)/.test(line);
+  }) || null;
+}
+
 // 行首若带部落名则剥离（兼容「部落 昵称」与「部落 | 昵称」两种写法）。
 function stripLeadingClan(body, clans) {
+  const separated = body.split(IMPORT_SEPARATOR).map(part => part.trim());
+  if (separated.length > 1) {
+    const clan = resolveClan(separated[0], clans);
+    if (clan) return { clan, rest: separated.slice(1).join(" | ") };
+  }
   const tokens = body.split(/[\s|｜\t]+/).filter(Boolean);
+  for (let count = 1; count <= Math.min(3, tokens.length); count += 1) {
+    const clan = resolveClanExact(tokens.slice(0, count).join(" "), clans);
+    if (clan) return { clan, rest: tokens.slice(count).join(" ") };
+  }
   for (let count = 1; count <= Math.min(3, tokens.length); count += 1) {
     const clan = resolveClan(tokens.slice(0, count).join(" "), clans);
     if (clan) return { clan, rest: tokens.slice(count).join(" ") };
@@ -739,8 +766,7 @@ function parseImportLines(text, clans, defaultClanId, defaultRole) {
     const trimmed = raw.trim();
     if (isRelay && !IMPORT_NUMBER_PREFIX.test(trimmed)) {
       if (!defaultClan && !headerClan) {
-        headerClan = resolveClan(trimmed, clans) ||
-          resolveClan(trimmed.split(/[\s|｜\t]+/)[0], clans);
+        headerClan = resolveHeaderClan(trimmed, clans);
       }
       continue;
     }
@@ -749,9 +775,18 @@ function parseImportLines(text, clans, defaultClanId, defaultRole) {
 
     let clan = defaultClan || headerClan;
     let rest = body;
-    if (!clan) {
-      const stripped = stripLeadingClan(body, clans);
-      if (stripped) { clan = stripped.clan; rest = stripped.rest; }
+    const stripped = stripLeadingClan(body, clans);
+    const explicitClan = IMPORT_SEPARATOR.test(body)
+      ? resolveClanExact(body.split(IMPORT_SEPARATOR)[0], clans)
+      : null;
+    const fallbackClan = defaultClan || headerClan;
+    if (stripped && IMPORT_SEPARATOR.test(body) &&
+        (!fallbackClan || explicitClan || stripped.clan.id === fallbackClan.id)) {
+      clan = stripped.clan;
+      rest = stripped.rest;
+    } else if (!clan && stripped) {
+      clan = stripped.clan;
+      rest = stripped.rest;
     }
     if (!clan) {
       parsed.push({ line: lineNo, raw: trimmed, ok: false, reason: "未找到对应部落" });
