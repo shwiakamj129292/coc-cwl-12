@@ -77,6 +77,7 @@ function json(data, status = 200) {
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "X-Frame-Options": "DENY",
+      "Strict-Transport-Security": "max-age=31536000",
       "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
       "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
       "Cross-Origin-Resource-Policy": "same-origin"
